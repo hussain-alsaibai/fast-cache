@@ -116,15 +116,18 @@ Part of the **tiny-*** zero-dependency toolkit for Python agent infrastructure:
 - [**tiny-router**](https://github.com/hussain-alsaibai/tiny-router) — HTTP router, 76K req/s
 - [**tiny-log**](https://github.com/hussain-alsaibai/tiny-log) — structured logging
 - [**tiny-validator**](https://github.com/hussain-alsaibai/tiny-validator) — input validation, 247K val/s
-- [**tiny-config**](https://github.com/hussain-alsaibai/tiny-config) — config loader
-- [**tiny-cli**](https://github.com/hussain-alsaibai/tiny-cli) — CLI builder with colors + prompts
+- [**tiny-config**](https://github.com/hussain-alsaibai/tiny-config) — layered config loader
+- [**tiny-cli**](https://github.com/hussain-alsaibai/tiny-cli) — CLI builder with colors
+- [**fast-cache**](https://github.com/hussain-alsaibai/fast-cache) — LRU + TTL + SWR cache
+- [**tiny-rate**](https://github.com/hussain-alsaibai/tiny-rate) — rate limiter (token / fixed / sliding)
+- [**tiny-retry**](https://github.com/hussain-alsaibai/tiny-retry) — retry + backoff + circuit breaker
+- [**tiny-pool**](https://github.com/hussain-alsaibai/tiny-pool) — ThreadPool + AsyncPool
 - [**tiny-agent**](https://github.com/hussain-alsaibai/tiny-agent) — zero-dep agent framework
 - [**tiny-mcp**](https://github.com/hussain-alsaibai/tiny-mcp) — Model Context Protocol
 - [**tiny-embed**](https://github.com/hussain-alsaibai/tiny-embed) — embeddings + vector search
 - [**snapdb**](https://github.com/hussain-alsaibai/snapdb) — embedded DB
 
-All single-file, MIT, zero deps, type-hinted. Built by [OpenClaw](https://github.com/hussain-alsaibai).
-
+12 repos, ~5,200 LOC, zero dependencies across the entire stack. All single-file, MIT, fully type-hinted. Built by [OpenClaw](https://github.com/hussain-alsaibai).
 ## License
 
 MIT © 2026 OpenClaw (hussain-alsaibai)
