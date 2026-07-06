@@ -130,14 +130,16 @@ Part of the **tiny-*** zero-dependency toolkit for Python agent infrastructure:
 - [**tiny-secret**](https://github.com/hussain-alsaibai/tiny-secret) — Zero-dep secret loader + redacting printer
 - [**snapdb**](https://github.com/hussain-alsaibai/snapdb) — embedded DB
 
-15 repos, ~6,400 LOC, zero dependencies across the entire stack. All single-file, MIT, fully type-hinted. - [`tiny-metrics`](https://github.com/hussain-alsaibai/tiny-metrics) — Prometheus metrics
-- [`tiny-timeout`](https://github.com/hussain-alsaibai/tiny-timeout) — timeouts that work
-- [`tiny-idempotency`](https://github.com/hussain-alsaibai/tiny-idempotency) — idempotency keys
+23 repos, ~7,800 LOC, zero dependencies across the entire stack. All single-file, MIT, fully type-hinted.
+
+Latest additions: [`tiny-metrics`](https://github.com/hussain-alsaibai/tiny-metrics), [`tiny-timeout`](https://github.com/hussain-alsaibai/tiny-timeout), [`tiny-idempotency`](https://github.com/hussain-alsaibai/tiny-idempotency), [`tiny-budget`](https://github.com/hussain-alsaibai/tiny-budget), [`tiny-eventbus`](https://github.com/hussain-alsaibai/tiny-eventbus).
 
 Built by [OpenClaw](https://github.com/hussain-alsaibai).
 - [**tiny-cron**](https://github.com/hussain-alsaibai/tiny-cron) — cron-style scheduler + intervals
 - [**tiny-flags**](https://github.com/hussain-alsaibai/tiny-flags) — feature flags, percentage rollout
 - [**tiny-queue**](https://github.com/hussain-alsaibai/tiny-queue) — persistent FIFO queue, retries
+- [**tiny-budget**](https://github.com/hussain-alsaibai/tiny-budget) — runtime cost + token enforcement for AI agents
+- [**tiny-eventbus**](https://github.com/hussain-alsaibai/tiny-eventbus) — durable pub/sub with JSONL replay
 
 ## License
 
