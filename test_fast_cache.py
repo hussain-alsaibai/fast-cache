@@ -39,6 +39,14 @@ class TestBasic(unittest.TestCase):
         c.clear()
         self.assertEqual(len(c), 0)
 
+    def test_bulk_get_set_and_keys(self):
+        c = fc.Cache(max_size=10)
+        c.set_many({"a": 1, "b": 2})
+        self.assertEqual(c.get_many(["a", "b", "c"], default="MISS"), {"a": 1, "b": 2, "c": "MISS"})
+        self.assertEqual(c.keys(), ["a", "b"])
+        self.assertEqual(c.stats()["hits"], 2)
+        self.assertEqual(c.stats()["misses"], 1)
+
 
 class TestLRUEviction(unittest.TestCase):
     def test_evict_lru(self):
@@ -69,6 +77,14 @@ class TestTTL(unittest.TestCase):
         time.sleep(0.1)
         self.assertEqual(c.get("short", "MISS"), "MISS")
         self.assertEqual(c.get("long"), 2)
+
+    def test_prune_removes_expired_entries(self):
+        c = fc.Cache(max_size=10, default_ttl=0.05)
+        c.set_many({"a": 1, "b": 2})
+        time.sleep(0.1)
+        self.assertEqual(c.prune(), 2)
+        self.assertEqual(len(c), 0)
+        self.assertEqual(c.stats()["expirations"], 2)
 
     def test_stale_while_revalidate(self):
         c = fc.Cache(max_size=10, default_ttl=0.05, stale_ttl=0.2)

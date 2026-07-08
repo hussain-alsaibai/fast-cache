@@ -97,6 +97,10 @@ class Cache(Generic[K, V]):
             self.hits += 1
             return value
 
+    def get_many(self, keys: "list[K] | tuple[K, ...]", default: Any = None) -> dict[K, Any]:
+        """Get several keys at once, preserving cache statistics and LRU order."""
+        return {key: self.get(key, default) for key in keys}
+
     def set(self, key: K, value: V, ttl: Optional[float] = None) -> None:
         """Insert/overwrite. ttl overrides the cache default."""
         with self._lock:
@@ -113,9 +117,35 @@ class Cache(Generic[K, V]):
             self._data[key] = (value, expires_at, stale_at)
             self._evict_if_needed()
 
+    def set_many(self, items: "dict[K, V]", ttl: Optional[float] = None) -> None:
+        """Insert several values with the same optional ttl override."""
+        with self._lock:
+            for key, value in items.items():
+                self.set(key, value, ttl=ttl)
+
     def delete(self, key: K) -> bool:
         with self._lock:
             return self._data.pop(key, None) is not None
+
+    def prune(self) -> int:
+        """Remove entries that are past TTL and stale windows. Returns removed count."""
+        with self._lock:
+            now = time.monotonic()
+            expired = [
+                key
+                for key, (_, expires_at, stale_at) in self._data.items()
+                if expires_at is not None and now >= expires_at and not (stale_at and now < stale_at)
+            ]
+            for key in expired:
+                del self._data[key]
+            self.expirations += len(expired)
+            return len(expired)
+
+    def keys(self) -> list[K]:
+        """Return live keys in LRU-to-MRU order."""
+        self.prune()
+        with self._lock:
+            return list(self._data.keys())
 
     def clear(self) -> None:
         with self._lock:

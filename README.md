@@ -80,12 +80,29 @@ cache.set("feed", [...])
 | Method | Description |
 |--------|-------------|
 | `c.get(key, default)` | Get value (returns stale within SWR window) |
+| `c.get_many(keys, default)` | Fetch several keys while preserving hit/miss stats |
 | `c.set(key, value, ttl)` | Insert/overwrite |
+| `c.set_many({key: value}, ttl)` | Bulk insert with one optional TTL |
 | `c.delete(key)` | Remove entry |
+| `c.prune()` | Remove entries past TTL + stale window |
+| `c.keys()` | Live keys in LRU-to-MRU order |
 | `c.clear()` | Empty cache |
 | `c.stats()` | Hits/misses/evictions/expirations |
 | `f.cache_info()` | Same as `f.cache.stats()` for a decorated function |
 | `f.cache_clear()` | Clear a decorated function's cache |
+
+## Agent Workflow Fit
+
+`fast-cache` is useful anywhere an autonomous workflow needs bounded memory
+without adding Redis or another service:
+
+- **Tool result memoization** — cache expensive GitHub, web, or model-provider lookups inside one run.
+- **Webhook dedupe windows** — keep recent delivery IDs with TTL before reaching for persistent idempotency.
+- **Bounty repro harnesses** — avoid repeated setup calls while keeping a single-file proof of concept.
+- **Cron health checks** — reuse recent probe results and expose `stats()` in status reports.
+
+Use `get_many()` / `set_many()` for batched tool calls and `prune()` before
+long-running status snapshots so cache size reflects live entries only.
 
 ## Benchmarks
 
