@@ -104,6 +104,8 @@ without adding Redis or another service:
 Use `get_many()` / `set_many()` for batched tool calls and `prune()` before
 long-running status snapshots so cache size reflects live entries only.
 
+See also: [Agent Memoization and Dedupe With fast-cache](reports/2026-07-09-agent-memoization.md), a short report on caching repeated tool results and webhook delivery IDs inside local agent workflows.
+
 ## Benchmarks
 
 ```
