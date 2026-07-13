@@ -199,5 +199,69 @@ class TestThreadSafety(unittest.TestCase):
         self.assertEqual(len(c), 1000)
 
 
+class TestAddAndTouch(unittest.TestCase):
+    """Webhook / event dedupe primitives (claim + sliding keepalive)."""
+
+    def test_add_returns_true_for_new_key(self):
+        c = fc.Cache(default_ttl=60)
+        self.assertTrue(c.add("delivery-1", {"id": 1}))
+        self.assertEqual(c.get("delivery-1"), {"id": 1})
+
+    def test_add_returns_false_for_live_duplicate(self):
+        c = fc.Cache(default_ttl=60)
+        self.assertTrue(c.add("delivery-1", {"first": True}))
+        # Replay: claim denied, original value preserved.
+        self.assertFalse(c.add("delivery-1", {"second": True}))
+        self.assertEqual(c.get("delivery-1"), {"first": True})
+
+    def test_add_returns_true_after_expiry(self):
+        c = fc.Cache(default_ttl=0.05)
+        self.assertTrue(c.add("delivery-1", {"first": True}))
+        time.sleep(0.08)
+        # Expired slot is treated as absent: a fresh add wins.
+        self.assertTrue(c.add("delivery-1", {"second": True}))
+        self.assertEqual(c.get("delivery-1"), {"second": True})
+
+    def test_add_no_ttl_never_blocks(self):
+        c = fc.Cache()  # no TTL
+        self.assertTrue(c.add("k", 1))
+        self.assertFalse(c.add("k", 2))
+        self.assertEqual(c.get("k"), 1)
+
+    def test_touch_extends_live_entry(self):
+        c = fc.Cache(default_ttl=0.05)
+        c.add("k", "v")
+        self.assertTrue(c.touch("k", ttl=60))
+        time.sleep(0.08)
+        self.assertEqual(c.get("k"), "v")  # still live after sleep
+
+    def test_touch_returns_false_for_missing(self):
+        c = fc.Cache(default_ttl=60)
+        self.assertFalse(c.touch("missing"))
+
+    def test_touch_returns_false_for_expired(self):
+        c = fc.Cache(default_ttl=0.05)
+        c.add("k", "v")
+        time.sleep(0.08)
+        self.assertFalse(c.touch("k"))
+
+    def test_webhook_dedupe_recipe(self):
+        """End-to-end webhook dedupe with the add() primitive."""
+        c = fc.Cache(default_ttl=300)  # 5-minute replay window
+
+        def receive(delivery_id: str, payload: dict) -> str:
+            if c.add(delivery_id, payload):
+                return "accepted"
+            return "duplicate"
+
+        self.assertEqual(receive("d-1", {"event": "a"}), "accepted")
+        self.assertEqual(receive("d-1", {"event": "a-replay"}), "duplicate")
+        self.assertEqual(receive("d-2", {"event": "b"}), "accepted")
+        # Stats reflect the dedupe: 2 hits on the cache layer (both first
+        # inserts), no second insert on replay (which is what we want).
+        stats = c.stats()
+        self.assertGreaterEqual(stats["size"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

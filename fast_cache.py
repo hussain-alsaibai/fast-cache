@@ -117,6 +117,66 @@ class Cache(Generic[K, V]):
             self._data[key] = (value, expires_at, stale_at)
             self._evict_if_needed()
 
+    def add(self, key: K, value: V, ttl: Optional[float] = None) -> bool:
+        """Insert only if the key is absent and not within its TTL.
+
+        Returns ``True`` if the entry was added, ``False`` if the key was
+        already present and still live (in which case nothing is mutated).
+        Useful for webhook / event delivery dedupe where the first writer
+        "claims" the slot and replays are no-ops.
+
+        An entry that has expired or aged into its stale window is treated as
+        absent; the new value replaces it and the call returns ``True``.
+        """
+        with self._lock:
+            now = time.monotonic()
+            entry = self._data.get(key)
+            if entry is not None:
+                _value, expires_at, _stale_at = entry
+                if expires_at is None or now < expires_at:
+                    # already live → claim denied
+                    return False
+                # expired: drop and fall through to insert
+                del self._data[key]
+            effective_ttl = ttl if ttl is not None else self.default_ttl
+            if effective_ttl is None:
+                expires_at = None
+                stale_at = None
+            else:
+                expires_at = now + effective_ttl
+                stale_at = now + effective_ttl + (self.stale_ttl or 0.0)
+            self._data[key] = (value, expires_at, stale_at)
+            self._evict_if_needed()
+            return True
+
+    def touch(self, key: K, ttl: Optional[float] = None) -> bool:
+        """Refresh the TTL of an existing live entry without changing its value.
+
+        Returns ``True`` if the entry was still live and its expiry was
+        extended. Useful for sliding-window counters and idempotency-key
+        sweeps where you want the first-arrival to keep its slot alive for
+        another window.
+        """
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return False
+            value, _expires_at, _stale_at = entry
+            now = time.monotonic()
+            if _expires_at is not None and now >= _expires_at:
+                # expired → cannot touch
+                return False
+            effective_ttl = ttl if ttl is not None else self.default_ttl
+            if effective_ttl is None:
+                expires_at = None
+                stale_at = None
+            else:
+                expires_at = now + effective_ttl
+                stale_at = now + effective_ttl + (self.stale_ttl or 0.0)
+            self._data[key] = (value, expires_at, stale_at)
+            self._data.move_to_end(key)
+            return True
+
     def set_many(self, items: "dict[K, V]", ttl: Optional[float] = None) -> None:
         """Insert several values with the same optional ttl override."""
         with self._lock:
