@@ -109,6 +109,7 @@ See also:
 - [Agent Memoization and Dedupe With fast-cache](reports/2026-07-09-agent-memoization.md) — caching repeated tool results and webhook delivery IDs inside local agent workflows.
 - [Agent Scan Caches With fast-cache](reports/2026-07-11-agent-scan-caches.md) — bounded TTL caches for bounty scanners, repo health checks, and metadata-heavy agent runs.
 - [Cache ROI for Agent Runs](reports/2026-07-14-cache-roi-for-agent-runs.md) — using cache hit rate, avoided tool calls, and stale-safe reuse to decide where local caches belong.
+- [Agent Context Cache Boundaries With fast-cache](reports/2026-07-17-agent-context-cache-boundaries.md) — TTL scopes, negative-cache limits, and cache stats for production agent workflows.
 
 ## Benchmarks
 
