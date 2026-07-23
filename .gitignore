@@ -1,0 +1,14 @@
+# Byte-compiled
+__pycache__/
+*.pyc
+*.pyo
+
+# Pytest
+.pytest_cache/
+.cache/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
