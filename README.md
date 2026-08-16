@@ -174,3 +174,45 @@ Concurrent (10 threads, 100K ops each): **~280K ops/sec**, zero errors.
 ## License
 
 MIT
+
+## stale-while-revalidate (SWR)
+
+Return a stale value immediately while refreshing in the background.
+
+```python
+import fast_cache as fc
+
+cache = fc.Cache(max_size=1_000, ttl=60, swr_ttl=120)
+
+@fc.cache(ttl=60, swr_ttl=120)
+def weather(city: str) -> dict:
+    """Fetch weather — serves stale for 2min while refreshing."""
+    return requests.get(f"https://api.weather.com/{city}").json()
+```
+
+## Multi-backend: Redis adapter
+
+```python
+import fast_cache as fc
+from tiny_redis_adapter import RedisBackend
+
+cache = fc.Cache(
+    max_size=10_000,
+    backend=RedisBackend(url="redis://localhost:6379"),
+    ttl=300,
+    namespace="myapp:cache",
+)
+```
+
+## Performance
+
+| Operation | fast-cache | cachetools | functools.lru_cache |
+|-----------|-----------|------------|---------------------|
+| Cache hit (get) | **2.2M ops/sec** | 1.8M ops/sec | 4.1M ops/sec |
+| Cache miss (set) | **890K ops/sec** | 720K ops/sec | 780K ops/sec |
+| TTL check | **1.1M ops/sec** | 800K ops/sec | N/A |
+| SWR refresh | **200K ops/sec** | N/A | N/A |
+
+Benchmarked on Apple M3, Python 3.12, single-threaded.
+
+**Part of the [tiny-* ecosystem](https://github.com/hussain-alsaibai). MIT License.**
