@@ -25,9 +25,9 @@ import time
 import json
 import os
 from collections import OrderedDict
-from typing import Any, Optional, Callable, Iterator
+from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["Cache", "CacheStats"]
 
 
@@ -238,6 +238,53 @@ class Cache:
         value = factory()
         self.set(key, value, ttl=ttl)
         return value
+
+    def get_or_set_async(self, key: str, afactory: Callable[[], Awaitable[Any]], ttl: Optional[float] = None) -> Awaitable[Any]:
+        """Get value, or set from an async factory if missing.
+
+        Always returns an awaitable (even when the value is already cached),
+        so callers can uniformly ``await`` it. Built for AI agents that cache
+        LLM responses / embeddings without blocking the event loop when the
+        value isn't cached yet.
+
+        .. code-block:: python
+
+            resp = await cache.get_or_set_async(
+                f"llm:{hashlib.sha256(prompt.encode()).hexdigest()}",
+                lambda: llm.acomplete(prompt),
+                ttl=3600,
+            )
+        """
+        value = self.get(key)
+        if value is not None:
+            return self._immediate(value)
+        return self._set_after_await(key, afactory(), ttl)
+
+    async def _immediate(self, value: Any) -> Any:
+        return value
+
+    async def _set_after_await(self, key: str, coro, ttl: Optional[float]) -> Any:
+        value = await coro
+        self.set(key, value, ttl=ttl)
+        return value
+
+    async def populate_missing(self, keys: list[str],
+                               afactory: Callable[[str], Awaitable[Any]],
+                               ttl: Optional[float] = None) -> dict[str, Any]:
+        """Fetch missing keys in parallel via an async factory.
+
+        Returns {key: value} for every requested key, populating the cache
+        for any that were absent. Uses ``asyncio.gather`` so agent workloads
+        (embedding batches, LLM prefetch) fan out instead of serializing.
+        """
+        import asyncio
+        got = self.mget(keys)
+        missing = [k for k in keys if k not in got]
+        values = await asyncio.gather(*[afactory(k) for k in missing])
+        for k, v in zip(missing, values):
+            self.set(k, v, ttl=ttl)
+            got[k] = v
+        return got
 
     # ------------------------------------------------------------------
     # Batch operations
