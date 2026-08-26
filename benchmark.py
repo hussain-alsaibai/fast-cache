@@ -8,7 +8,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fast_cache import Cache
+from fast_cache import Cache, CacheAsync
 
 
 def random_string(n=16):
@@ -158,6 +158,47 @@ def benchmark_concurrent():
     print(f"  Final size: {cache.size}")
 
 
+def benchmark_async():
+    """Benchmark CacheAsync — asyncio throughput for get/set/mget."""
+    print(f"\n{'=' * 60}")
+    print("Benchmark: Async throughput (CacheAsync)")
+    print(f"{'=' * 60}\n")
+
+    import asyncio
+
+    async def _run(fc, keys, values):
+        # Serialized set + get + mget over the same event loop.
+        start = time.perf_counter()
+        for k, v in zip(keys, values):
+            await fc.set(k, v)
+        set_elapsed = time.perf_counter() - start
+
+        start = time.perf_counter()
+        for k in keys:
+            await fc.get(k)
+        get_elapsed = time.perf_counter() - start
+
+        # mget in chunks of 100
+        start = time.perf_counter()
+        n_chunks = len(keys) // 100
+        for i in range(n_chunks):
+            await fc.mget(keys[i * 100:(i + 1) * 100])
+        mget_elapsed = time.perf_counter() - start
+        return set_elapsed, get_elapsed, mget_elapsed, len(keys), n_chunks * 100
+
+    async def _main():
+        for label, n in [("Small", 1_000), ("Medium", 10_000)]:
+            keys = [f"k_{i:06d}" for i in range(n)]
+            values = [random_string(32) for _ in range(n)]
+            fc = CacheAsync()
+            set_t, get_t, mget_t, total, mget_total = await _run(fc, keys, values)
+            print(f"  [{label}] async set():   {set_t:.3f}s ({n / set_t / 1000:.0f}K ops/sec)")
+            print(f"  [{label}] async get():   {get_t:.3f}s ({n / get_t / 1000:.0f}K ops/sec)")
+            print(f"  [{label}] async mget():  {mget_t:.3f}s ({mget_total / mget_t / 1000:.0f}K ops/sec)")
+
+    asyncio.run(_main())
+
+
 if __name__ == "__main__":
     print("🚀 fast-cache benchmark\n")
 
@@ -166,6 +207,7 @@ if __name__ == "__main__":
     run_benchmark("Large Dataset", n_keys=100_000, ops=500_000)
 
     benchmark_ttl()
+    benchmark_async()
     benchmark_concurrent()
 
     print(f"\n{'=' * 60}")

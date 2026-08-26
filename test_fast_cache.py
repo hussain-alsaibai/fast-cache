@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 
-from fast_cache import Cache, CacheStats
+from fast_cache import Cache, CacheAsync, CacheStats
 
 
 def test_basic_get_set():
@@ -323,6 +323,104 @@ def test_stats_dict():
     print("✅ stats dict")
 
 
+def test_peek_no_lru_effect():
+    cache = Cache(maxsize=3)
+    cache.set("a", 1)
+    cache.set("b", 2)
+    cache.set("c", 3)
+    info = cache.peek("a")
+    assert info is not None
+    assert info["value"] == 1
+    assert info["access_count"] == 0  # peek must NOT touch the entry
+    assert "ttl_remaining" in info
+    assert "size" in info
+    # Peek must not promote 'a' to MRU: inserting 'd' evicts 'a'.
+    cache.set("d", 4)
+    assert cache.get("a") is None
+    assert cache.get("b") == 2
+    print("✅ peek (no LRU effect)")
+
+
+def test_mget_consistency_stats():
+    cache = Cache()
+    cache.mset({"a": 1, "b": 2})
+    cache.set("gone", 3, ttl=0.01)
+    import time as _t
+    _t.sleep(0.02)  # let 'gone' expire
+    result = cache.mget(["a", "b", "gone", "missing"], return_stats=True)
+    assert result.found == {"a": 1, "b": 2}
+    assert "missing" in result.missing
+    assert "gone" in result.expired
+    assert result.stats["found"] == 2
+    assert result.stats["missing"] == 1
+    assert result.stats["expired"] == 1
+    assert result.stats["requested"] == 4
+    # Default (no stats) still returns a plain dict of found items only.
+    plain = cache.mget(["a", "missing"])
+    assert plain == {"a": 1}
+    print("✅ mget consistency stats")
+
+
+def test_profile():
+    cache = Cache()
+    cache.set("small", 42)
+    cache.set("big", list(range(1000)))
+    profile = cache.profile()
+    assert profile["entries"] == 2
+    sizes = {item["key"]: item["size"] for item in profile["items"]}
+    assert sizes["big"] > sizes["small"]
+    assert profile["total"] == sizes["small"] + sizes["big"]
+    print("✅ profile")
+
+
+def test_evict_oldest():
+    cache = Cache()
+    cache.mset({"a": 1, "b": 2, "c": 3, "d": 4})
+    assert cache.evict_oldest(2) == 2
+    assert cache.get("a") is None
+    assert cache.get("b") is None
+    assert cache.get("c") == 3
+    assert cache.evict_oldest(100) == 2  # only 2 left
+    assert cache.size == 0
+    print("✅ evict_oldest")
+
+
+def test_evict_by_pattern():
+    cache = Cache()
+    cache.mset({"session:a": 1, "session:b": 2, "other": 3})
+    assert cache.evict_by_pattern("session:*") == 2
+    assert cache.get("session:a") is None
+    assert cache.get("other") == 3
+    cache.mset({"tmp_x": 1, "tmp_2": 2})
+    assert cache.evict_by_pattern(r"^tmp_\d+$", regex=True) == 1
+    assert cache.get("tmp_x") == 1
+    assert cache.get("tmp_2") is None
+    print("✅ evict_by_pattern")
+
+
+def test_cache_async():
+    import asyncio
+
+    async def _run():
+        cache = CacheAsync(maxsize=10, ttl=60)
+        assert await cache.set("a", 1) is True
+        assert await cache.get("a") == 1
+        assert await cache.get("missing", "d") == "d"
+        await cache.mset({"x": 1, "y": 2})
+        assert await cache.mget(["x", "y", "z"]) == {"x": 1, "y": 2}
+        r = await cache.mget(["x", "z"], return_stats=True)
+        assert "z" in r.missing
+        assert await cache.mdelete(["x", "z"]) == 1
+        p = await cache.profile()
+        assert p["entries"] >= 2
+        assert await cache.peek("y") is not None
+        assert await cache.evict_by_pattern("*") >= 1
+        assert await cache.clear() >= 0
+
+    asyncio.run(_run())
+    print("✅ CacheAsync")
+
+
 def run_all_tests():
     print("🧪 Running fast-cache test suite...\n")
     tests = [
@@ -354,6 +452,12 @@ def run_all_tests():
         test_no_ttl_never_expires,
         test_empty_cache_behavior,
         test_stats_dict,
+        test_peek_no_lru_effect,
+        test_mget_consistency_stats,
+        test_profile,
+        test_evict_oldest,
+        test_evict_by_pattern,
+        test_cache_async,
     ]
 
     passed = 0

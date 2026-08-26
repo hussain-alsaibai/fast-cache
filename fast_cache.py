@@ -24,11 +24,38 @@ import threading
 import time
 import json
 import os
+import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.2.0"
-__all__ = ["Cache", "CacheStats"]
+__version__ = "0.3.0"
+__all__ = ["Cache", "CacheAsync", "CacheStats"]
+
+
+def _deep_sizeof(obj: Any, _seen: Optional[set] = None) -> int:
+    """Recursively estimate Python object memory in bytes.
+
+    Uses :func:`sys.getsizeof` on ``obj`` and, for containers, on each
+    element so that nested lists/dicts/tuples are accounted for.
+    Reference cycles are guarded by an ``id()`` set so we never loop
+    forever on a self-referencing structure.
+    """
+    if _seen is None:
+        _seen = set()
+    oid = id(obj)
+    if oid in _seen:
+        return 0
+    _seen.add(oid)
+    try:
+        size = sys.getsizeof(obj)
+    except TypeError:
+        return 0
+
+    if isinstance(obj, dict):
+        size += sum(_deep_sizeof(k, _seen) + _deep_sizeof(v, _seen) for k, v in obj.items())
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        size += sum(_deep_sizeof(item, _seen) for item in obj)
+    return size
 
 
 class CacheStats:
@@ -80,6 +107,8 @@ class CacheStats:
 
     def to_dict(self) -> dict:
         with self._lock:
+            total = self.hits + self.misses
+            hit_rate = round(self.hits / total if total > 0 else 0.0, 4)
             return {
                 "hits": self.hits,
                 "misses": self.misses,
@@ -87,7 +116,7 @@ class CacheStats:
                 "expirations": self.expirations,
                 "inserts": self.inserts,
                 "deletes": self.deletes,
-                "hit_rate": round(self.hit_rate, 4),
+                "hit_rate": hit_rate,
             }
 
     def __repr__(self) -> str:
@@ -290,20 +319,74 @@ class Cache:
     # Batch operations
     # ------------------------------------------------------------------
 
-    def mget(self, keys: list[str]) -> dict[str, Any]:
-        """Get multiple keys. Returns {key: value} for existing keys."""
-        result: dict[str, Any] = {}
+    def mget(
+        self,
+        keys: list[str],
+        *,
+        return_stats: bool = False,
+    ):
+        """Get multiple keys.
+
+        By default returns ``{key: value}`` for keys that exist and are
+        non-expired (missing/expired keys are simply absent from the
+        result). Each successful hit promotes its key to MRU.
+
+        With ``return_stats=True`` returns a ``MGetResult`` named tuple
+        so callers can see which keys were missing/expired without
+        having to recompute the diff against the request. Stats are
+        always incremented under the same lock as the read so they are
+        consistent with the returned values.
+
+        Consistency guarantee: if a key is missing or expired at the
+        moment of the call, it is **never** silently substituted with
+        ``None`` in the result — it is omitted from ``found`` and
+        listed in ``missing`` (when ``return_stats=True``).
+        """
+        from collections import namedtuple
+
+        found: dict[str, Any] = {}
+        missing: list[str] = []
+        expired: list[str] = []
+
         with self._lock:
             for key in keys:
                 entry = self._data.get(key)
-                if entry and not entry.is_expired:
-                    self._data.move_to_end(key)
-                    entry.touch()
-                    result[key] = entry.value
-                    self._stats.hit()
-                else:
+                if entry is None:
+                    missing.append(key)
                     self._stats.miss()
-        return result
+                    continue
+                if entry.is_expired:
+                    self._remove(key)
+                    expired.append(key)
+                    self._stats.expiration()
+                    self._stats.miss()
+                    continue
+                # Hit: promote to MRU and record
+                self._data.move_to_end(key)
+                entry.touch()
+                found[key] = entry.value
+                self._stats.hit()
+
+        if not return_stats:
+            return found
+
+        MGetResult = namedtuple(
+            "MGetResult",
+            ["found", "missing", "expired", "requested", "stats"],
+        )
+        stats = {
+            "found": len(found),
+            "missing": len(missing),
+            "expired": len(expired),
+            "requested": len(keys),
+        }
+        return MGetResult(
+            found=found,
+            missing=missing,
+            expired=expired,
+            requested=len(keys),
+            stats=stats,
+        )
 
     def mset(self, items: dict[str, Any], ttl: Optional[float] = None) -> int:
         """Set multiple keys. Returns count of new insertions."""
@@ -430,6 +513,136 @@ class Cache:
         return f"Cache(entries={self.size}, maxsize={self.maxsize}, hit_rate={self._stats.hit_rate:.1%})"
 
     # ------------------------------------------------------------------
+    # Introspection (no LRU side-effects)
+    # ------------------------------------------------------------------
+
+    def peek(self, key: str) -> Optional[dict]:
+        """Inspect key metadata without affecting LRU order.
+
+        Returns a dict with ``value``, ``ttl_remaining``, ``size``, and
+        ``access_count`` for the key, or ``None`` if missing/expired.
+        Unlike ``get``, this does **not** touch the entry or update LRU.
+        """
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None or entry.is_expired:
+                return None
+            return {
+                "value": entry.value,
+                "ttl_remaining": (
+                    max(0.0, entry.expires_at - time.time())
+                    if entry.expires_at is not None
+                    else None
+                ),
+                "size": entry.size,
+                "access_count": entry.access_count,
+            }
+
+    def profile(self) -> dict:
+        """Return per-entry memory usage and aggregate totals.
+
+        Each entry's size is measured with ``sys.getsizeof`` (recursive over
+        container contents) so the totals reflect Python object overhead
+        rather than the cheap JSON-serialization estimate used for
+        ``maxmemory`` enforcement.
+
+        Returns::
+
+            {
+                "items":   [{"key": str, "size": int, ...}, ...],
+                "total":   int,   # sum of all entry sizes
+                "entries": int,   # count of profiled entries
+            }
+        """
+        items: list[dict] = []
+        total = 0
+        with self._lock:
+            snapshot = list(self._data.items())
+        for key, entry in snapshot:
+            sz = _deep_sizeof(entry.value)
+            items.append(
+                {
+                    "key": key,
+                    "size": sz,
+                    "ttl_remaining": (
+                        max(0.0, entry.expires_at - time.time())
+                        if entry.expires_at is not None
+                        else None
+                    ),
+                    "access_count": entry.access_count,
+                }
+            )
+            total += sz
+        return {"items": items, "total": total, "entries": len(items)}
+
+    # ------------------------------------------------------------------
+    # Selective eviction
+    # ------------------------------------------------------------------
+
+    def evict_oldest(self, n: int = 1) -> int:
+        """Evict the ``n`` least-recently-used entries.
+
+        Returns the number of entries actually evicted (may be less than
+        ``n`` if the cache holds fewer than ``n`` items, or fewer if some
+        were already expired and got cleaned out first).
+        """
+        if n <= 0:
+            return 0
+        evicted = 0
+        with self._lock:
+            # Drop any already-expired entries up front so they don't count.
+            expired = [k for k, e in self._data.items() if e.is_expired]
+            for key in expired:
+                self._remove(key)
+                self._stats.expiration()
+            while evicted < n and self._data:
+                key, entry = self._data.popitem(last=False)
+                self._total_size -= entry.size
+                self._stats.eviction()
+                evicted += 1
+                if self._evict_callback:
+                    try:
+                        self._evict_callback(key, entry.value)
+                    except Exception:
+                        pass
+        return evicted
+
+    def evict_by_pattern(
+        self,
+        pattern: str,
+        *,
+        regex: bool = False,
+    ) -> int:
+        """Evict keys matching ``pattern``.
+
+        With ``regex=False`` (default) the pattern is treated as a
+        ``fnmatch`` glob (e.g. ``"session:*"`` or ``"*expired*"``). With
+        ``regex=True`` the pattern is a compiled regex matched against
+        each key. Returns the number of keys evicted. The configured
+        ``evict_callback`` is fired for each removed key with its value.
+        """
+        import re as _re
+        import fnmatch as _fn
+
+        if regex:
+            compiled = _re.compile(pattern)
+            def matches(key: str) -> bool:
+                return compiled.search(key) is not None
+        else:
+            def matches(key: str) -> bool:
+                return _fn.fnmatch(key, pattern)
+
+        evicted = 0
+        with self._lock:
+            targets = [key for key in list(self._data.keys()) if matches(key)]
+            for key in targets:
+                # _remove already fires the evict_callback with the value.
+                self._remove(key)
+                self._stats.eviction()
+                evicted += 1
+        return evicted
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
@@ -519,6 +732,180 @@ class Cache:
                         self._evict_callback(key, entry.value)
                     except Exception:
                         pass
+
+
+class CacheAsync:
+    """Async wrapper around :class:`Cache` for asyncio-centric workloads.
+
+    All methods are coroutines that delegate to the internal synchronous
+    :class:`Cache`. Access to the underlying cache is serialized with an
+    ``asyncio.Lock`` so that concurrent coroutines (embedding batches, LLM
+    prefetch, agent request fan-out) do not interleave mid-operation.
+
+    Every method mirrors the sync API but returns an awaitable:
+
+    .. code-block:: python
+
+        cache = CacheAsync(maxsize=1000, ttl=3600)
+        await cache.set("key", "value")
+        value = await cache.get("key")
+
+    Because the wrapped :class:`Cache` is itself thread-safe, you can also
+    mix synchronous calls on ``cache._cache`` directly if needed.
+    """
+
+    def __init__(
+        self,
+        maxsize: Optional[int] = None,
+        ttl: Optional[float] = None,
+        maxmemory: Optional[int] = None,
+        evict_callback: Optional[Callable[[str, Any], None]] = None,
+        thread_safe: bool = True,
+    ):
+        # Deferred import so asyncio is only required when actually used.
+        self._cache = Cache(
+            maxsize=maxsize,
+            ttl=ttl,
+            maxmemory=maxmemory,
+            evict_callback=evict_callback,
+            thread_safe=thread_safe,
+        )
+        self._alock = _AsyncNullLock()
+
+    # ------------------------------------------------------------------
+    # Core async operations
+    # ------------------------------------------------------------------
+
+    async def get(self, key: str, default: Any = None) -> Any:
+        async with self._alock:
+            return self._cache.get(key, default=default)
+
+    async def set(self, key: str, value: Any, ttl: Optional[float] = None) -> bool:
+        async with self._alock:
+            return self._cache.set(key, value, ttl=ttl)
+
+    async def get_or_set(
+        self,
+        key: str,
+        afactory: Callable[[], Awaitable[Any]],
+        ttl: Optional[float] = None,
+    ) -> Any:
+        """Get value, or await ``afactory`` and set it if missing.
+
+        If the key is already cached the factory is never awaited.
+        """
+        value = await self.get(key)
+        if value is not None:
+            return value
+        value = await afactory()
+        await self.set(key, value, ttl=ttl)
+        return value
+
+    async def delete(self, key: str) -> bool:
+        async with self._alock:
+            return self._cache.delete(key)
+
+    async def pop(self, key: str, default: Any = None) -> Any:
+        async with self._alock:
+            return self._cache.pop(key, default=default)
+
+    async def has(self, key: str) -> bool:
+        async with self._alock:
+            return self._cache.has(key)
+
+    # ------------------------------------------------------------------
+    # Batch async operations
+    # ------------------------------------------------------------------
+
+    async def mget(self, keys: list[str], *, return_stats: bool = False):
+        async with self._alock:
+            return self._cache.mget(keys, return_stats=return_stats)
+
+    async def mset(self, items: dict[str, Any], ttl: Optional[float] = None) -> int:
+        async with self._alock:
+            return self._cache.mset(items, ttl=ttl)
+
+    async def mdelete(self, keys: list[str]) -> int:
+        async with self._alock:
+            return self._cache.mdelete(keys)
+
+    async def clear(self) -> int:
+        async with self._alock:
+            return self._cache.clear()
+
+    # ------------------------------------------------------------------
+    # Introspection / profiling (delegated, no LRU side-effects)
+    # ------------------------------------------------------------------
+
+    async def peek(self, key: str) -> Optional[dict]:
+        async with self._alock:
+            return self._cache.peek(key)
+
+    async def profile(self) -> dict:
+        async with self._alock:
+            return self._cache.profile()
+
+    async def evict_oldest(self, n: int = 1) -> int:
+        async with self._alock:
+            return self._cache.evict_oldest(n)
+
+    async def evict_by_pattern(self, pattern: str, *, regex: bool = False) -> int:
+        async with self._alock:
+            return self._cache.evict_by_pattern(pattern, regex=regex)
+
+    async def cleanup(self) -> int:
+        async with self._alock:
+            return self._cache.cleanup()
+
+    # ------------------------------------------------------------------
+    # Info
+    # ------------------------------------------------------------------
+
+    async def info(self) -> dict:
+        async with self._alock:
+            return self._cache.info()
+
+    @property
+    def size(self) -> int:
+        return self._cache.size
+
+    @property
+    def memory_usage(self) -> int:
+        return self._cache.memory_usage
+
+    @property
+    def stats(self):
+        return self._cache.stats
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._cache
+
+    def __repr__(self) -> str:
+        return f"CacheAsync({self._cache!r})"
+
+
+class _AsyncNullLock:
+    """Minimal async re-entrant lock guard.
+
+    Uses :class:`asyncio.Lock` under the hood; created lazily by
+    :class:`CacheAsync` so that importing the module never forces an
+    asyncio dependency until a CacheAsync instance is constructed.
+    """
+
+    def __init__(self):
+        import asyncio
+
+        self._lock = asyncio.Lock()
+
+    async def __aenter__(self):
+        await self._lock.acquire()
+        return self
+
+    async def __aexit__(self, *args):
+        self._lock.release()
 
 
 class _NullLock:
