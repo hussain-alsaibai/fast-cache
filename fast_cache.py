@@ -28,8 +28,8 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.3.0"
-__all__ = ["Cache", "CacheAsync", "CacheStats"]
+__version__ = "0.4.0"
+__all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover"]
 
 
 def _deep_sizeof(obj: Any, _seen: Optional[set] = None) -> int:
@@ -646,8 +646,14 @@ class Cache:
     # Persistence
     # ------------------------------------------------------------------
 
-    def save(self, path: str) -> int:
-        """Save cache to JSON file. Returns bytes written."""
+    def save(self, path: str, *, binary: bool = False) -> int:
+        """Save cache to file. Returns bytes written.
+
+        Args:
+            path: Destination path.
+            binary: If True, use pickle-protocol (faster, preserves arbitrary
+                object types). If False (default), use JSON with ``default=str``.
+        """
         with self._lock:
             data = {}
             for key, entry in self._data.items():
@@ -658,18 +664,34 @@ class Cache:
                     "ttl": entry.expires_at - time.time() if entry.expires_at else None,
                     "size": entry.size,
                 }
-            payload = json.dumps(data, default=str, indent=2)
-            with open(path, "w") as f:
+            if binary:
+                import pickle
+                payload = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+                with open(path, "wb") as f:
+                    f.write(payload)
+                return len(payload)
+            payload = json.dumps(data, default=str, indent=2).encode()
+            with open(path, "wb") as f:
                 f.write(payload)
-            return len(payload.encode())
+            return len(payload)
 
-    def load(self, path: str) -> int:
-        """Load cache from JSON file. Returns count loaded."""
+    def load(self, path: str, *, binary: bool = False) -> int:
+        """Load cache from a file. Returns count loaded.
+
+        Args:
+            path: Source path.
+            binary: Must match the ``binary`` flag used in :meth:`save`.
+        """
         with self._lock:
             if not os.path.exists(path):
                 return 0
-            with open(path, "r") as f:
-                data = json.load(f)
+            if binary:
+                import pickle
+                with open(path, "rb") as f:
+                    data = pickle.load(f)
+            else:
+                with open(path, "rb") as f:
+                    data = json.loads(f.read().decode())
             count = 0
             for key, item in data.items():
                 ttl = item.get("ttl")
@@ -678,6 +700,22 @@ class Cache:
                 self.set(key, item["value"], ttl=ttl)
                 count += 1
             return count
+
+    def export_csv(self, path: str) -> int:
+        """Export cache (key, ttl_remaining, size) to CSV for spreadsheets/BI."""
+        import csv
+        with self._lock:
+            rows = []
+            for key, entry in self._data.items():
+                if entry.is_expired:
+                    continue
+                ttl = entry.expires_at - time.time() if entry.expires_at else None
+                rows.append((key, entry.size, round(ttl or 0, 2)))
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["key", "size_bytes", "ttl_remaining_s"])
+            w.writerows(rows)
+        return len(rows)
 
     # ------------------------------------------------------------------
     # Internal
@@ -732,6 +770,126 @@ class Cache:
                         self._evict_callback(key, entry.value)
                     except Exception:
                         pass
+
+
+class DiskSpillover:
+    """LRU-aware disk-backed cache that transparently spills cold entries to disk.
+
+    Keeps a hot in-memory tier (via :class:`Cache`) and moves the least-
+    recently-used entries to a JSONL file when memory pressure hits
+    ``max_memory_bytes``. On access, spilled entries are re-loaded back into
+    RAM. Designed for agents that cache large payloads (embeddings, file
+    contents, API responses) without exhausting heap.
+
+    Args:
+        cache: An optional :class:`Cache` instance (used as the hot tier).
+            If None, a default in-memory cache is created.
+        disk_path: Path to the spill file. Defaults to ``"./spill.jsonl"``.
+        max_memory_bytes: Once in-memory usage exceeds this, oldest entries
+            are spilled. Default 16 MiB.
+
+    Example:
+        from fast_cache import Cache, DiskSpillover
+        spill = DiskSpillover(disk_path="/tmp/cache")
+        spill.set("big", {"data": [1, 2, 3]} * 10000)
+        value = spill.get("big")
+        print(spill.stats())
+    """
+
+    def __init__(
+        self,
+        cache: "Cache" = None,
+        disk_path: str = "./spill.jsonl",
+        max_memory_bytes: int = 16 * 1024 * 1024,
+    ):
+        self._cache = cache or Cache()
+        self.disk_path = disk_path
+        self.max_memory_bytes = max_memory_bytes
+        self._spill_index: dict[str, float] = {}  # key -> spilled_at
+        self._lock = self._cache._lock
+
+    def set(self, key: str, value: Any, ttl: Optional[float] = None) -> bool:
+        """Set a key. Spills oldest entries if over memory budget."""
+        with self._lock:
+            ok = self._cache.set(key, value, ttl=ttl)
+            self._evict_to_disk()
+            return ok
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a key, promoting it back into the hot tier if on disk."""
+        with self._lock:
+            val = self._cache.peek(key)
+            if val is not None:
+                return val["value"]
+            value = self._read_disk(key)
+            if value is not None:
+                self._spill_index.pop(key, None)
+                self._cache.set(key, value)
+                return value
+            return default
+
+    def delete(self, key: str) -> bool:
+        with self._lock:
+            self._spill_index.pop(key, None)
+            self._cache.delete(key)
+            return True
+
+    def stats(self) -> dict:
+        return {
+            "in_memory": self._cache.size,
+            "spilled": len(self._spill_index),
+            "memory_usage": self._cache.memory_usage,
+            "max_memory_bytes": self.max_memory_bytes,
+        }
+
+    # -- internal --
+
+    def _evict_to_disk(self) -> None:
+        # Peek LRU (oldest) entries and spill until under budget
+        while self._cache.memory_usage > self.max_memory_bytes and self._cache.size > 1:
+            key, entry = self._cache._data.popitem(last=False)
+            self._cache._total_size -= entry.size
+            self._cache._stats.eviction()
+            self._spill_index[key] = time.time()
+            self._append_disk(key, entry.value, entry.expires_at)
+
+    def _append_disk(self, key: str, value: Any, expires_at: Optional[float]) -> None:
+        import os
+        rec = {
+            "_k": key,
+            "_v": value,
+            "_e": expires_at - time.time() if expires_at else None,
+        }
+        mode = "a" if os.path.exists(self.disk_path) else "w"
+        with open(self.disk_path, mode, encoding="utf-8") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+
+    def _read_disk(self, key: str) -> Any:
+        import os
+        if not os.path.exists(self.disk_path):
+            return None
+        try:
+            with open(self.disk_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if rec.get("_k") == key:
+                        return rec.get("_v")
+        except OSError:
+            pass
+        return None
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._cache or key in self._spill_index
+
+    def __len__(self) -> int:
+        return self._cache.size + len(self._spill_index)
+
 
 
 class CacheAsync:
