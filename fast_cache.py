@@ -28,7 +28,7 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover"]
 
 
@@ -318,6 +318,67 @@ class Cache:
     # ------------------------------------------------------------------
     # Batch operations
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Async bulk operations (v0.5) — for agent workloads
+    # ------------------------------------------------------------------
+
+    async def bulk_get_or_set_async(
+        self,
+        keys: list[str],
+        afactory: Callable[[str], Awaitable[Any]],
+        ttl: Optional[float] = None,
+        max_concurrency: int = 10,
+    ) -> dict[str, Any]:
+        """Bulk get-or-set with controlled concurrency.
+
+        Like populate_missing but with semaphore-controlled parallelism
+        to avoid thundering-herd on hot keys.
+
+        Args:
+            keys: List of cache keys to look up
+            afactory: Async callable(key) -> value for cache misses
+            ttl: Optional TTL override
+            max_concurrency: Max simultaneous factory calls (default 10)
+
+        Returns:
+            {key: value} for all requested keys (hits + misses)
+        """
+        import asyncio
+        import asyncio as _asyncio
+        got = self.mget(keys)
+        missing = [k for k in keys if k not in got]
+        if not missing:
+            return got
+
+        semaphore = _asyncio.Semaphore(max_concurrency)
+
+        async def fetch_with_limit(k: str) -> tuple[str, Any]:
+            async with semaphore:
+                val = await afactory(k)
+                self.set(k, val, ttl=ttl)
+                return k, val
+
+        results = await _asyncio.gather(*[fetch_with_limit(k) for k in missing])
+        for k, v in results:
+            got[k] = v
+        return got
+
+    async def bulk_invalidate_async(
+        self,
+        keys: list[str],
+        pattern: Optional[str] = None,
+        regex: bool = False,
+    ) -> int:
+        """Async bulk invalidation by key list or pattern."""
+        import asyncio
+        if pattern:
+            return await self.evict_by_pattern(pattern, regex=regex)
+        deleted = 0
+        for k in keys:
+            if self.delete(k):
+                deleted += 1
+        return deleted
 
     def mget(
         self,
