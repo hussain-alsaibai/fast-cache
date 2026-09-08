@@ -1,0 +1,56 @@
+# fast-cache — LLM Manifest (llms.txt)
+
+> Zero-dependency, high-performance in-memory cache for Python.
+> LRU + TTL + memory limits + thread-safe + async + (v0.5.1+) semantic keys.
+
+## Identity
+- **Package:** `fast-cache`
+- **Latest version:** 0.5.1
+- **Python:** 3.10+
+- **Dependencies:** 0
+- **Repo:** https://github.com/hussain-alsaibai/fast-cache
+- **License:** MIT
+
+## What it solves
+Cache LLM responses, embeddings, intermediate results, and session state
+without Redis or external infrastructure. Drop-in replacement for
+`cachetools.LRUCache` with TTL + memory cap + thread safety + async.
+
+## Public API
+- `Cache(maxsize=1000, ttl=3600, max_memory_mb=None)` — primary cache
+- `cache.set(key, value, ttl=None)` — store
+- `cache.get(key, default=None)` — fetch, refreshes LRU
+- `cache.mget(keys)` / `cache.mset({k: v})` — batch ops
+- `cache.evict_oldest()` / `cache.evict_by_pattern(regex)` — selective prune
+- `cache.peek(key)` — read TTL+size without touching LRU order
+- `cache.stats()` — hit rate, misses, evictions
+- `cache.save(path)` / `Cache.load(path)` — JSON persistence
+- `CacheAsync(...)` — full async wrapper
+
+## Semantic mode (v0.5.1+)
+```python
+from fast_cache import Cache
+cache = Cache(semantic=True)  # paraphrase-tolerant keys
+cache.set("What is the capital of France?", "Paris")
+cache.get("France's capital city?")  # "Paris" — same cache slot
+```
+Uses SimHash over normalized tokens — no embedding model required.
+Free, fast, ~5x better hit rate on paraphrase queries vs exact match.
+
+## Quick start
+```python
+from fast_cache import Cache
+cache = Cache(maxsize=10_000, ttl=3600)
+cache.set("user:42", {"name": "alice"})
+print(cache.get("user:42"))
+print(cache.stats())  # {"hits": 1, "misses": 0, "hit_rate": 1.0}
+```
+
+## Thread/async safety
+- Thread-safe via `threading.RLock` for sync ops
+- `CacheAsync` provides `await get/set` for asyncio workloads
+
+## Sister libraries (OpenClaw tiny-* ecosystem)
+- `snapdb` — durable storage layer
+- `tiny-prompt-cache` — specialized LLM prompt caching
+- `tiny-semantic-cache` — embedding-based cache (heavier, more precise)
