@@ -28,8 +28,8 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.5.0"
-__all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover"]
+__version__ = "0.6.0"
+__all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener"]
 
 
 def _deep_sizeof(obj: Any, _seen: Optional[set] = None) -> int:
@@ -119,8 +119,122 @@ class CacheStats:
                 "hit_rate": hit_rate,
             }
 
+    def to_prometheus(self, namespace: str = "fast_cache", cache_label: str = "default") -> str:
+        """Render counters in Prometheus text-exposition format.
+
+        Returns a string suitable for ``/metrics`` endpoints. Names follow
+        the ``<namespace>_<metric>_total`` convention so a scraper can pick
+        them up without extra config. Hit rate is exposed as a gauge
+        (``_ratio``) since it's bounded 0..1 rather than monotonic.
+
+        Example::
+
+            # GUNICORN_METRICS handler
+            def metrics():
+                return Response(cache.stats.to_prometheus(), mimetype="text/plain")
+        """
+        with self._lock:
+            total = self.hits + self.misses
+            hit_rate = (self.hits / total) if total > 0 else 0.0
+            lines = [
+                f"# HELP {namespace}_hits_total Total cache hits.",
+                f"# TYPE {namespace}_hits_total counter",
+                f'{namespace}_hits_total{{cache="{cache_label}"}} {self.hits}',
+                f"# HELP {namespace}_misses_total Total cache misses.",
+                f"# TYPE {namespace}_misses_total counter",
+                f'{namespace}_misses_total{{cache="{cache_label}"}} {self.misses}',
+                f"# HELP {namespace}_evictions_total Total cache evictions (LRU).",
+                f"# TYPE {namespace}_evictions_total counter",
+                f'{namespace}_evictions_total{{cache="{cache_label}"}} {self.evictions}',
+                f"# HELP {namespace}_expirations_total Total TTL expirations.",
+                f"# TYPE {namespace}_expirations_total counter",
+                f'{namespace}_expirations_total{{cache="{cache_label}"}} {self.expirations}',
+                f"# HELP {namespace}_inserts_total Total cache inserts.",
+                f"# TYPE {namespace}_inserts_total counter",
+                f'{namespace}_inserts_total{{cache="{cache_label}"}} {self.inserts}',
+                f"# HELP {namespace}_deletes_total Total cache deletes.",
+                f"# TYPE {namespace}_deletes_total counter",
+                f'{namespace}_deletes_total{{cache="{cache_label}"}} {self.deletes}',
+                f"# HELP {namespace}_hit_ratio Cache hit ratio (0..1).",
+                f"# TYPE {namespace}_hit_ratio gauge",
+                f'{namespace}_hit_ratio{{cache="{cache_label}"}} {hit_rate:.6f}',
+            ]
+        return "\n".join(lines) + "\n"
+
     def __repr__(self) -> str:
         return f"CacheStats(hits={self.hits}, misses={self.misses}, hit_rate={self.hit_rate:.2%})"
+
+
+class CacheMetricsListener:
+    """Push-style metrics consumer for the agent/observability ecosystem.
+
+    Wraps a :class:`CacheStats` and forwards every counter mutation to a
+    caller-supplied sink (an OpenTelemetry meter, a Prometheus client
+    registry, or any plain function). One listener per cache keeps the
+    fan-out cheap — the listener hooks the counters directly rather than
+    polling, so emit latency is bounded by a single attribute access.
+
+    Example with OpenTelemetry::
+
+        from opentelemetry import metrics
+        meter = metrics.get_meter("fast_cache")
+        hits_counter = meter.create_counter("cache_hits")
+        misses_counter = meter.create_counter("cache_misses")
+
+        def sink(event: str, _delta: int) -> None:
+            if event == "hit":
+                hits_counter.add(1)
+            elif event == "miss":
+                misses_counter.add(1)
+
+        listener = CacheMetricsListener(cache.stats, sink)
+
+    The listener is idempotent and safe to construct/discard at any time.
+    """
+
+    _EVENTS = ("hit", "miss", "eviction", "expiration", "insert", "delete")
+
+    def __init__(self, stats: "CacheStats", sink) -> None:
+        self._stats = stats
+        self._sink = sink
+        # Snapshot counter values so deltas are accurate across threads.
+        self._last = self._snapshot()
+
+    def _snapshot(self) -> dict:
+        with self._stats._lock:
+            return {
+                "hit": self._stats.hits,
+                "miss": self._stats.misses,
+                "eviction": self._stats.evictions,
+                "expiration": self._stats.expirations,
+                "insert": self._stats.inserts,
+                "delete": self._stats.deletes,
+            }
+
+    def emit(self) -> dict:
+        """Compute deltas since the last emit and forward them to the sink.
+
+        Returns the delta dict that was forwarded (useful for logging or
+        chaining to additional sinks). Counters that did not change are
+        omitted to keep the per-tick payload tiny.
+        """
+        current = self._snapshot()
+        delta = {}
+        for ev in self._EVENTS:
+            d = current[ev] - self._last.get(ev, 0)
+            if d:
+                delta[ev] = d
+        if delta:
+            try:
+                self._sink(delta)
+            except Exception:
+                # Sink errors must never break the cache.
+                pass
+        self._last = current
+        return delta
+
+    def __repr__(self) -> str:
+        return f"CacheMetricsListener(events={len(self._EVENTS)})"
 
 
 class _CacheEntry:
