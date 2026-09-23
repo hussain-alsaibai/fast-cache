@@ -298,6 +298,32 @@ cache = fc.Cache(
 )
 ```
 
+## Token-budget gate (don't memoize what we can't afford)
+
+Pair `Cache` with a per-task token ledger so an LLM-backed cache refuses
+to memorize results once a budget ceiling is exceeded. Cache hits are
+free; misses pay. If the budget refuses, the value is still returned
+to the caller — we don't punish them for the budget refusing to memorize.
+
+```python
+from fast_cache import Cache
+from examples.token_budget_cache import TokenBudgetCache, BudgetLedger
+
+ledger = BudgetLedger(per_task_tokens=100_000)
+tbc = TokenBudgetCache(
+    inner=Cache(maxsize=10_000, ttl=3600),
+    ledger=ledger,
+    tokens_per_completion=lambda v: v.get("tokens", 0),
+)
+
+@tbc.wrap
+def complete(prompt: str) -> dict:
+    return model.complete(prompt)  # {"text": ..., "tokens": 142}
+```
+
+Run it directly to see the pattern: `python examples/token_budget_cache.py`.
+Drop in `tiny-budget-ledger` for production by replacing `BudgetLedger`.
+
 ## Performance
 
 | Operation | fast-cache | cachetools | functools.lru_cache |
