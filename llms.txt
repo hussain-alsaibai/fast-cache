@@ -5,7 +5,7 @@
 
 ## Identity
 - **Package:** `fast-cache`
-- **Latest version:** 0.5.1
+- **Latest version:** 0.7.0
 - **Python:** 3.10+
 - **Dependencies:** 0
 - **Repo:** https://github.com/hussain-alsaibai/fast-cache
@@ -26,6 +26,7 @@ without Redis or external infrastructure. Drop-in replacement for
 - `cache.stats()` — hit rate, misses, evictions
 - `cache.save(path)` / `Cache.load(path)` — JSON persistence
 - `CacheAsync(...)` — full async wrapper
+- `cache_method(cache, *, ttl=None, prefix='', key_fn=None)` — decorator that caches a method's return value on an existing `Cache` or `CacheAsync` (v0.7.0+). Works on sync + async methods. SHA-256-based deterministic keying, preserves `__name__`/`__doc__`, caches `None`/`0`/`""`/`False` correctly.
 
 ## Semantic mode (v0.5.1+)
 ```python

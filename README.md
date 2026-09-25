@@ -18,6 +18,7 @@ Perfect for AI agents that need to cache LLM responses, embeddings, intermediate
 | **Selective Eviction** | `evict_oldest()` and `evict_by_pattern()` for targeted pruning |
 | **Introspection** | `peek()` reads TTL + size without disturbing LRU order |
 | **Persistence** | Save/load to JSON for session recovery across restarts |
+| **`cache_method` decorator** *(v0.7.0)* | Cache any method's return value on a `Cache` or `CacheAsync` — sync + async, SHA-256 keying, preserves `__name__`/`__doc__` |
 | **Batch Ops** | `mget`, `mset`, `mdelete` for bulk operations |
 | **Zero Deps** | Pure Python 3.10+, no external packages |
 

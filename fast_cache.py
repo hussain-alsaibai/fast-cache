@@ -28,8 +28,8 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.6.1"
-__all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener"]
+__version__ = "0.7.0"
+__all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener", "cache_method"]
 
 
 def _deep_sizeof(obj: Any, _seen: Optional[set] = None) -> int:
@@ -1249,3 +1249,108 @@ class _NullLock:
 
     def __exit__(self, *args):
         pass
+
+
+# ── cache_method decorator (v0.7.0) ──────────────────────────────────────────
+
+
+import asyncio as _asyncio
+import functools as _functools
+import hashlib as _hashlib
+import inspect as _inspect
+
+
+_MISS = object()  # sentinel for "not in cache"
+
+
+def _make_method_key(args: tuple, kwargs: dict) -> str:
+    """Deterministic SHA-256 cache key from (args, kwargs).
+
+    Uses ``repr`` so equal-but-differently-typed arguments still differ
+    (``a=1`` and ``a=1.0`` are intentionally different keys). Tuple order
+    is preserved for positional args; kwargs are sorted for determinism.
+    """
+    parts: list[str] = []
+    for a in args:
+        parts.append(("arg", repr(a)))
+    for k in sorted(kwargs):
+        parts.append(("kw", f"{k}={kwargs[k]!r}"))
+    blob = "|".join(f"{tag}:{val}" for tag, val in parts).encode("utf-8")
+    return _hashlib.sha256(blob).hexdigest()
+
+
+def _strip_self(args: tuple, fn: Callable[..., Any]) -> tuple:
+    """No-op placeholder. ``self``/``cls`` are KEPT in the cache key by default
+    so that two instances of the same class don't share slots. Users who want
+    instance-shared caching should use ``key_fn=`` to drop self explicitly."""
+    return args
+
+
+def cache_method(
+    cache: "Cache | CacheAsync",
+    *,
+    ttl: Optional[float] = None,
+    prefix: str = "",
+    key_fn: Optional[Callable[..., str]] = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorator: cache a method's return value on an existing :class:`Cache` or :class:`CacheAsync`.
+
+    Works on both sync and async methods. The cache key is built from
+    ``(args, kwargs)`` after dropping ``self`` for bound methods — so two
+    instances of the same class don't share slots. Pass ``key_fn=callable``
+    when you want a custom key (e.g. ignore certain kwargs).
+
+    Args:
+        cache: A :class:`Cache` (sync) or :class:`CacheAsync` instance.
+        ttl: Optional per-call TTL override; falls back to the cache's default.
+        prefix: Optional namespace prefix, e.g. ``"user.get"``. Prepended to the key.
+        key_fn: Optional callable that takes ``(*args, **kwargs)`` (after ``self`` is
+            stripped) and returns the cache key directly.
+
+    Example:
+        cache = Cache(maxsize=1024, ttl=60)
+
+        class UserService:
+            @cache_method(cache, prefix="user.get", ttl=30)
+            def get_user(self, user_id: str) -> dict:
+                return db.fetch(user_id)
+
+        svc = UserService()
+        svc.get_user("u-1")  # cached for 30s
+    """
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        is_coro = _asyncio.iscoroutinefunction(fn)
+
+        def _key(args: tuple, kwargs: dict) -> str:
+            if key_fn is not None:
+                return prefix + key_fn(*args, **kwargs)
+            return prefix + _make_method_key(args, kwargs)
+
+        if is_coro:
+            @_functools.wraps(fn)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                key = _key(_strip_self(args, fn), kwargs)
+                hit = await cache.get(key, default=_MISS)
+                if hit is not _MISS:
+                    return hit
+                target = fn.__func__ if isinstance(fn, classmethod) else fn
+                value = await target(*args, **kwargs)
+                await cache.set(key, value, ttl=ttl)
+                return value
+
+            return async_wrapper
+
+        @_functools.wraps(fn)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            key = _key(_strip_self(args, fn), kwargs)
+            hit = cache.get(key, default=_MISS)
+            if hit is not _MISS:
+                return hit
+            target = fn.__func__ if isinstance(fn, classmethod) else fn
+            value = target(*args, **kwargs)
+            cache.set(key, value, ttl=ttl)
+            return value
+
+        return sync_wrapper
+
+    return decorator

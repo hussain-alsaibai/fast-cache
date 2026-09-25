@@ -4,6 +4,21 @@ All notable changes to `fast-cache` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-25
+
+### Added
+
+- **`cache_method(cache, *, ttl=None, prefix='', key_fn=None)`** — decorator that caches a method's return value on an existing `Cache` or `CacheAsync`. Works on both sync and async methods. The cache key is built from `(self, args, kwargs)` by default (so two instances of the same class don't share slots). Pass `key_fn=callable(self, *args, **kwargs) -> str` for a custom key (e.g. ignore kwargs, bucket by id mod N).
+  - SHA-256-based deterministic keying.
+  - Caches `None`, `0`, `""`, `False` correctly (uses internal sentinel to distinguish "miss" from "cached falsy value").
+  - Preserves `__name__`, `__doc__`, `__wrapped__` via `functools.wraps`.
+  - Use case: cache DB lookups, API calls, expensive computations, LLM prompts — without restructuring existing code.
+- New `tests/test_v070_cache_method.py` — 19 tests covering sync, async, instances, kwargs, TTL, prefix, custom key_fn, module-level functions, staticmethods, falsy results, and complex return values. Full suite 62/62.
+
+### Notes
+
+- `cache_method` does NOT support `@classmethod` directly because Python's classmethod descriptor protocol doesn't forward `cls` when called from inside the decorator. Wrap `cls.__func__` instead, or skip the decorator for classmethods.
+
 ## [0.6.1] - 2026-09-23
 
 ### Added
