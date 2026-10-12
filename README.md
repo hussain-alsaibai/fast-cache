@@ -266,6 +266,59 @@ sync `set` path.
 
 **Why lazy TTL?** No background threads means no drift, no scheduling overhead, and no zombie entries. Expired entries are cleaned up on the next `get()` or `cleanup()` call. The tradeoff: very stale entries consume memory until touched. Use `cleanup()` periodically if memory is tight.
 
+## cache_method decorator (v0.7.0+)
+
+Cache any method's return value on an existing `Cache` or `CacheAsync` — no code restructuring.
+
+```python
+from fast_cache import Cache, cache_method
+
+cache = Cache(maxsize=1024, ttl=60)
+
+class UserService:
+    @cache_method(cache, prefix="user.get", ttl=30)
+    def get_user(self, user_id: str) -> dict:
+        return db.fetch(user_id)   # expensive DB hit
+
+    @cache_method(cache, prefix="user.search")
+    def search_users(self, query: str, *, limit: int = 10) -> list:
+        return db.search(query, limit=limit)
+
+svc = UserService()
+svc.get_user("u-1")   # hits DB
+svc.get_user("u-1")   # cache hit (TTL=30s)
+```
+
+**Works on async methods too** — pass a `CacheAsync` instance:
+
+```python
+from fast_cache import CacheAsync, cache_method
+
+cache = CacheAsync(maxsize=1024, ttl=60)
+
+class AgentClient:
+    @cache_method(cache, prefix="llm.complete", ttl=120)
+    async def complete(self, prompt: str) -> str:
+        return await llm.generate(prompt)  # expensive inference
+```
+
+**Custom keys** — when the default SHA-256 of all args is too long or you want to ignore certain kwargs:
+
+```python
+@cache_method(cache, key_fn=lambda self, x: f"k={x % 10}")  # bucket by x mod 10
+def slow(self, x):
+    return compute(x)
+```
+
+**Semantics:**
+
+- `self`/`cls` is part of the cache key — two instances of the same class don't share slots.
+- Caches `None`, `0`, `""`, `False` correctly (uses internal sentinel to distinguish "miss" from "cached falsy").
+- Preserves `__name__`, `__doc__`, `__wrapped__` via `functools.wraps`.
+- Per-call `ttl=` overrides the cache's default TTL.
+
+**Not supported:** `@classmethod` directly — Python's classmethod descriptor protocol doesn't forward `cls` when called from inside the decorator. Wrap `cls.__func__` instead, or skip the decorator for classmethods.
+
 ## License
 
 MIT

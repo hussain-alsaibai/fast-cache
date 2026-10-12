@@ -4,6 +4,38 @@ All notable changes to `fast-cache` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+
+## [0.7.1] - 2026-10-12
+
+### Added
+- **`fast_cache_v071.py` (sidecar)** — CRDT-flavored `merge()` and
+  tombstone-aware `evict()` for fleet-of-peers reconciliation. New
+  functionality only; existing fast-cache users see no behaviour change
+  unless they `import fast_cache_v071`.
+  - `merge(local, remote)` — associative, commutative, idempotent
+    reconciliation of two cache snapshots. Tombstones always win over
+    inserts; for two inserts the higher timestamp wins; for two
+    tombstones the more recent deletion wins.
+  - `tombstone_evict(cache, key)` — soft-delete a key, marking it as
+    deleted with a timestamp. The next sweep permanently removes it.
+  - `is_tombstoned(cache, key)` — check whether a key is soft-deleted.
+  - `merge_async(local, remote)` — async companion that runs the merge
+    in a thread pool, so the event loop never blocks.
+- 25 new tests in `test_fast_cache_v071.py` covering CRDT merge
+  semantics, tombstone lifecycle, async companion, idempotency, and
+  integration with the real `fast_cache.Cache` backend.
+
+### Fixed
+- `Tombstone` now exposes `is_expired = False` and a no-op `touch()`
+  so the core `Cache._evict_if_needed` and `Cache.get` helpers can
+  iterate over a mixed `_data` dict without raising.
+- `snapshot()` unwraps `_CacheEntry`-style value wrappers (extracting
+  the inner `.value`) so merged snapshots re-`set()` cleanly on the
+  real `fast_cache.Cache` backend.
+- `tombstone_evict()` writes directly to `_data` instead of going
+  through `cache.set()`, which would wrap the `Tombstone` in a
+  `_CacheEntry` and hide it from `is_tombstoned()` and `merge()`.
+
 ## [0.7.0] - 2026-09-25
 
 ### Added
@@ -65,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 - Initial public release. TTL, LRU, stats, persistence.
 
+[0.7.1]: https://github.com/hussain-alsaibai/fast-cache/compare/v0.7.0...v0.7.1
 [0.6.1]: https://github.com/hussain-alsaibai/fast-cache/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/hussain-alsaibai/fast-cache/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/hussain-alsaibai/fast-cache/compare/v0.4.0...v0.5.0
