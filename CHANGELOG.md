@@ -5,6 +5,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.7.2] - 2026-10-18
+
+### Added
+- **`fast_cache_v072.py` (sidecar)** — `SingleFlightCache` protects
+  against cache-stampede: when N concurrent requests miss the same
+  key, only one runs the factory; the rest block on a per-key
+  `threading.Event` and read the result the first thread writes.
+  New functionality only; existing fast-cache users see no behaviour
+  change unless they `import fast_cache_v072`.
+  - `SingleFlightCache(cache).get_or_set(key, factory, ttl=...)` — same
+    shape as `Cache.get_or_set`, with single-flight semantics.
+  - `SingleFlightStats` — counters for `loads`, `shared`, `waiters`, `peak_waiters`. `serialized()` for Prometheus.
+  - Different keys run in parallel — the lock is per-key, not global.
+  - Factory exceptions propagate to every waiter and clear the
+    in-flight slot so retries can run.
+- 15 new tests in `test_fast_cache_v072.py` covering single-thread
+  semantics, stampede protection (10 threads, 1 factory call),
+  parallel different-keys, exception handling, `None` factory
+  result, stats, `clear()` waiter release, and TTL re-run.
+
 ## [0.7.1] - 2026-10-12
 
 ### Added

@@ -19,6 +19,7 @@ Perfect for AI agents that need to cache LLM responses, embeddings, intermediate
 | **Introspection** | `peek()` reads TTL + size without disturbing LRU order |
 | **Persistence** | Save/load to JSON for session recovery across restarts |
 | **`cache_method` decorator** *(v0.7.0)* | Cache any method's return value on a `Cache` or `CacheAsync` — sync + async, SHA-256 keying, preserves `__name__`/`__doc__` |
+| **Single-flight loader** *(v0.7.2)* | `SingleFlightCache(cache).get_or_set(key, factory)` — protects against cache-stampede: N concurrent misses share one factory call. Per-key `threading.Event`. Different keys run in parallel. |
 | **Batch Ops** | `mget`, `mset`, `mdelete` for bulk operations |
 | **Zero Deps** | Pure Python 3.10+, no external packages |
 
