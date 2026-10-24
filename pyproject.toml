@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fast-cache"
-version = "0.7.0"
+version = "0.7.2"
 description = "Zero-dependency LRU + TTL + stale-while-revalidate cache for Python. 2.2M ops/s, sync + async."
 readme = "README.md"
 license = {text = "MIT"}
