@@ -62,8 +62,13 @@ def test_cache_method_on_py38_staticmethod_object():
 
     wrapped = cache_method(cache, prefix="svc")(Py38StaticMethod(compute))
 
-    assert wrapped(10) == 11
-    assert wrapped(10) == 11
+    # ``wrapped`` is a staticmethod descriptor. On Python 3.8/3.9 such an
+    # object is not directly callable, so reach the underlying function
+    # through ``__func__`` (available on every supported version).
+    fn = wrapped.__func__
+
+    assert fn(10) == 11
+    assert fn(10) == 11
     assert calls == [10]
 
 
