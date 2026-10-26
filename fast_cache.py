@@ -28,7 +28,7 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.7.2"
+__version__ = "0.7.3"
 __all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener", "cache_method"]
 
 
@@ -1318,6 +1318,30 @@ def cache_method(
         svc = UserService()
         svc.get_user("u-1")  # cached for 30s
     """
+    def _wrap_target(fn: Callable[..., Any]) -> Callable[..., Any]:
+        # ``@staticmethod`` / ``@classmethod`` objects are descriptors, not
+        # plain functions. A ``staticmethod`` object only became directly
+        # callable in Python 3.10 (bpo-43682); on Python 3.8/3.9 calling one
+        # raises ``TypeError: staticmethod object is not callable``, which is
+        # what happened when ``@cache_method`` was stacked on top of
+        # ``@staticmethod`` on those interpreters.
+        is_staticmethod = isinstance(fn, staticmethod)
+        if is_staticmethod:
+            fn = fn.__func__
+        elif isinstance(fn, classmethod):
+            raise TypeError(
+                "cache_method() does not support @classmethod; apply it to the "
+                "underlying function instead "
+                "(e.g. cache_method(cache)(Cls.method.__func__))"
+            )
+
+        wrapper = decorator(fn)
+        if is_staticmethod:
+            # Keep it a descriptor so ``Cls.method(x)`` and ``obj.method(x)``
+            # both call it without binding self/cls as the first argument.
+            return staticmethod(wrapper)
+        return wrapper
+
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         is_coro = _asyncio.iscoroutinefunction(fn)
 
@@ -1333,8 +1357,7 @@ def cache_method(
                 hit = await cache.get(key, default=_MISS)
                 if hit is not _MISS:
                     return hit
-                target = fn.__func__ if isinstance(fn, classmethod) else fn
-                value = await target(*args, **kwargs)
+                value = await fn(*args, **kwargs)
                 await cache.set(key, value, ttl=ttl)
                 return value
 
@@ -1346,11 +1369,10 @@ def cache_method(
             hit = cache.get(key, default=_MISS)
             if hit is not _MISS:
                 return hit
-            target = fn.__func__ if isinstance(fn, classmethod) else fn
-            value = target(*args, **kwargs)
+            value = fn(*args, **kwargs)
             cache.set(key, value, ttl=ttl)
             return value
 
         return sync_wrapper
 
-    return decorator
+    return _wrap_target

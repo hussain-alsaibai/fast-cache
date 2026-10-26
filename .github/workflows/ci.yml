@@ -14,4 +14,4 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest
-      - run: python -m pytest test_fast_cache.py test_fast_cache_v071.py test_fast_cache_v072.py test_version_consistency.py tests/test_v060_metrics.py tests/test_v070_cache_method.py -v
+      - run: python -m pytest test_fast_cache.py test_fast_cache_v071.py test_fast_cache_v072.py test_version_consistency.py tests/test_v060_metrics.py tests/test_v070_cache_method.py tests/test_v073_staticmethod_py38.py -v

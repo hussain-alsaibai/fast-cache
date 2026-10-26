@@ -5,6 +5,31 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.7.3] - 2026-10-26
+
+### Fixed
+- **`cache_method` now works on top of `@staticmethod` on every supported
+  Python.** A `staticmethod` object only became directly callable in
+  Python 3.10 (bpo-43682). On Python 3.8 and 3.9 the decorator held the
+  descriptor and called it directly, so every call raised
+  `TypeError: 'staticmethod' object is not callable`. The decorator now
+  unwraps `fn.__func__` and re-wraps the result as a `staticmethod`, so
+  class access (`Cls.method(x)`) and instance access (`obj.method(x)`)
+  both work and neither binds `self`/`cls` as the first argument.
+- Applying `cache_method` to a `classmethod` now raises a `TypeError`
+  with an actionable message instead of failing later with a confusing
+  signature error. Use `cache_method(cache)(Cls.method.__func__)`.
+
+### Added
+- `tests/test_v073_staticmethod_py38.py` — regression coverage that
+  simulates the pre-3.10 non-callable `staticmethod` with a subclass.
+  Verified to fail against the pre-fix code (3 failed) and pass after
+  (4 passed).
+
+### Changed
+- CI now runs the new test file.
+- Bumped `__version__` and `pyproject.toml` to `0.7.3`.
+
 ## [0.7.2] - 2026-10-18
 
 ### Added
