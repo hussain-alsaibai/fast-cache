@@ -26,7 +26,8 @@ Perfect for AI agents that need to cache LLM responses, embeddings, intermediate
 ## Install
 
 ```bash
-pip install fast-cache
+# From GitHub (recommended -- not yet on PyPI)
+pip install git+https://github.com/hussain-alsaibai/fast-cache.git
 ```
 
 Or copy `fast_cache.py` — it's one file, no dependencies.
