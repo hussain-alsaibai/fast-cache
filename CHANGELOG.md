@@ -5,6 +5,59 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.8.0] - 2026-10-23
+
+### Fixed
+- **P0: `Cache.info()` deadlocked permanently.** `CacheStats.to_dict()`
+  acquired a plain `threading.Lock` and then called `self.hit_rate`, which
+  acquired the same lock again. Every call to `cache.info()` - a headline
+  feature, and what the README tells you to call to check your hit rate -
+  hung the calling thread with no error and no timeout. `CacheStats._lock` is
+  now an `RLock`, and `to_dict()` computes `hit_rate` inline so all
+  counters are read under a single acquisition.
+- **`SingleFlightCache` was not composable.** It exposed only
+  `get_or_set`, so it could not wrap or be wrapped by another cache layer.
+  It now delegates `get`, `set`, `has`, `delete`, `keys`, `len`,
+  and `in` to the inner cache.
+- **README advertised three APIs that did not exist.** `swr_ttl`, the
+  `@fc.cache` decorator, `namespace=`, and a `RedisBackend` adapter were all
+  documented since 2026-08-16 and all raised `TypeError` on use. The Redis
+  section is gone; SWR and namespacing now exist for real (below).
+- **README performance table was fabricated.** It cited cachetools and
+  `functools.lru_cache` numbers for SWR on "Apple M3, Python 3.12" that were
+  never measured, and claimed a 2.2M ops/sec hit rate that the code does not
+  reach. Replaced with output from `benchmark_swr.py`, including the
+  unflattering finding that `lru_cache` is ~14x faster on a pure hit.
+- `NamespaceView.items()` returned `None` for every value (it looked up the
+  stripped key instead of the prefixed one).
+
+### Added
+- **`SwrCache`** (in `_v080.py`) - stale-while-revalidate. Serve a stale
+  value immediately, refresh in the background. Refreshes are **coalesced per
+  key**: 20 concurrent readers of one stale key cause exactly one factory call.
+  A failing background refresh keeps the previous value and bumps
+  `refresh_errors` rather than raising at the caller.
+- **`SwrStats`** - `fresh_hit`, `stale_hit`, `expired_miss`, `refreshes`,
+  `coalesced`, `refresh_errors`, and `stale_ratio`.
+- **`namespaced()` / `NamespaceView`** - key-prefix facades for sharing one
+  cache across subsystems, with `add`, `incr`, `clear`, `keys`, and
+  `items`.
+- `benchmark_swr.py` - reproducible benchmark; every number in the README
+  comes from it.
+- 26 new tests covering SWR freshness, coalescing under concurrency, refresh
+  failure handling, namespacing, and both fixed bugs.
+
+### Changed
+- **Scalar fast path for `Cache.set`.** `_estimate_size()` ran
+  `json.dumps()` on every write (365K ops/sec), capping `set` at ~22K
+  ops/sec. `bool / int / float / str / bytes / None` now skip serialization:
+  **`set` 22K -> 57K ops/sec, hit 591K -> 1,445K ops/sec.** Sizes are kept
+  byte-identical to `len(json.dumps(v))` so `maxmemory` caps behave exactly
+  as before.
+- Version is now consistent across `__version__`, `pyproject.toml`, and
+  this changelog. It previously read `0.1.0` in code while the CHANGELOG
+  advertised `0.7.2`.
+
 ## [0.7.3] - 2026-10-26
 
 ### Fixed
