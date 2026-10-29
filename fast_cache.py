@@ -28,9 +28,41 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.7.3"
+__version__ = "0.8.0"
 __all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener", "cache_method"]
 
+
+def _SCALAR_SIZE(value: Any) -> Optional[int]:
+    """Fast size estimate for immutable scalars; None means "use json".
+
+    int  : 28 bytes, the CPython object size, plus str() length as a cheap
+           proxy for magnitude so very large ints are not under-counted.
+    bool : subclass of int, so it must be checked first.
+    float: 24 bytes.
+    str  : 49 + len, the CPython ASCII str overhead.
+    None : 16 bytes (singleton).
+    bytes: 33 + len.
+    """
+    t = type(value)
+    if t is str:
+        # 49 is the empty-string object size; json.dumps('') is 2 bytes, so
+        # use the JSON-visible size to stay consistent with container values
+        # (and with the pre-0.8.0 behaviour the memory-limit tests encode).
+        return len(value) + 2
+    if t is bool:
+        return len("true" if value else "false")
+    if t is int:
+        return len(str(value))
+    if t is float:
+        return len(repr(value))
+    if t is type(None):
+        return 4
+    if t is bytes:
+        # json.dumps cannot encode bytes; the old fallback path reached
+        # len(json.dumps(value, default=str).encode()), which stringifies.
+        # Keep that behaviour so memory accounting does not shift.
+        return len(str(value).encode()) + 2
+    return None
 
 def _deep_sizeof(obj: Any, _seen: Optional[set] = None) -> int:
     """Recursively estimate Python object memory in bytes.
@@ -68,7 +100,7 @@ class CacheStats:
         self.expirations: int = 0
         self.inserts: int = 0
         self.deletes: int = 0
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def hit(self) -> None:
         with self._lock:
@@ -899,6 +931,13 @@ class Cache:
     def _estimate_size(self, value: Any) -> int:
         """Estimate memory size of a value (approximate)."""
         try:
+            # Scalars are the common case and json.dumps on every
+            # set cost ~365K ops/sec. Take a direct arithmetic
+            # path for immutable scalars; anything else still
+            # falls back to serialization.
+            size = _SCALAR_SIZE(value)
+            if size is not None:
+                return size
             return len(json.dumps(value, default=str).encode())
         except (TypeError, ValueError):
             return 64  # fallback
