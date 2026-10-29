@@ -1,4 +1,5 @@
 # fast-cache
+[![CI](https://github.com/hussain-alsaibai/fast-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/fast-cache/actions/workflows/ci.yml)
 
 **Zero-dependency, high-performance in-memory cache for Python.** LRU + TTL + memory limits + stats in a single file. No Redis, no setup — just import and cache.
 
