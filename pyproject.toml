@@ -23,3 +23,22 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+[tool.setuptools]
+# This is a flat-layout project with many top-level modules: the main
+# fast_cache.py, the historical version sidecars, the newer _v072/_v080
+# sidecars, benchmark scripts and several test files. setuptools refuses to
+# auto-discover a flat layout with more than one top-level module, and the
+# build failed with:
+#
+#   error: Multiple top-level modules discovered in a flat-layout: [...]
+#
+# So the modules that ship are listed explicitly. The benchmark scripts and
+# the test files are deliberately excluded.
+py-modules = [
+    "fast_cache",
+    "fast_cache_v071",
+    "fast_cache_v072",
+    "_v072",
+    "_v080",
+]
