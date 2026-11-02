@@ -1,5 +1,10 @@
 # fast-cache
+
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](fast_cache.py)
 [![CI](https://github.com/hussain-alsaibai/fast-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/hussain-alsaibai/fast-cache/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-0.8.0-blue)](https://github.com/hussain-alsaibai/fast-cache)
 
 **Zero-dependency, high-performance in-memory cache for Python.** LRU + TTL + memory limits + stats in a single file. No Redis, no setup — just import and cache.
 
@@ -22,7 +27,7 @@ Perfect for AI agents that need to cache LLM responses, embeddings, intermediate
 | **`cache_method` decorator** *(v0.7.0)* | Cache any method's return value on a `Cache` or `CacheAsync` — sync + async, SHA-256 keying, preserves `__name__`/`__doc__` |
 | **Single-flight loader** *(v0.7.2)* | `SingleFlightCache(cache).get_or_set(key, factory)` — protects against cache-stampede: N concurrent misses share one factory call. Per-key `threading.Event`. Different keys run in parallel. |
 | **Batch Ops** | `mget`, `mset`, `mdelete` for bulk operations |
-| **Zero Deps** | Pure Python 3.10+, no external packages |
+| **Zero Deps** | Pure Python 3.8+, no external packages |
 
 ## Install
 
@@ -322,37 +327,43 @@ def slow(self, x):
 
 **Not supported:** `@classmethod` directly — Python's classmethod descriptor protocol doesn't forward `cls` when called from inside the decorator. Wrap `cls.__func__` instead, or skip the decorator for classmethods.
 
-## License
-
-MIT
-
 ## stale-while-revalidate (SWR)
 
 Return a stale value immediately while refreshing in the background.
 
+`SwrCache` wraps a plain `Cache`; it lives in the `_v080` sidecar module.
+
 ```python
-import fast_cache as fc
+from fast_cache import Cache
+from _v080 import SwrCache
 
-cache = fc.Cache(max_size=1_000, ttl=60, swr_ttl=120)
+inner = Cache(maxsize=1_000, ttl=60)
+cache = SwrCache(inner, swr_window=120)
 
-@fc.cache(ttl=60, swr_ttl=120)
-def weather(city: str) -> dict:
-    """Fetch weather — serves stale for 2min while refreshing."""
-    return requests.get(f"https://api.weather.com/{city}").json()
+def fetch() -> dict:
+    return requests.get("https://api.weather.com/manama").json()
+
+data = cache.get_or_refresh("weather:manama", fetch, ttl=60)
 ```
 
-## Multi-backend: Redis adapter
+Refreshes are **coalesced per key**: 20 concurrent readers of one stale key
+cause exactly one factory call. A failing background refresh keeps the
+previous value and bumps `refresh_errors` rather than raising at the caller.
+
+## Key namespacing
+
+Scope a group of keys so you can clear them without touching the rest of the
+cache.
 
 ```python
-import fast_cache as fc
-from tiny_redis_adapter import RedisBackend
+from fast_cache import Cache
+from _v080 import namespaced
 
-cache = fc.Cache(
-    max_size=10_000,
-    backend=RedisBackend(url="redis://localhost:6379"),
-    ttl=300,
-    namespace="myapp:cache",
-)
+cache = Cache(maxsize=10_000, ttl=300)
+users = namespaced(cache, "users")
+
+users.set("42", {"name": "ali"})
+users.clear()   # only drops users:* keys
 ```
 
 ## Token-budget gate (don't memoize what we can't afford)
@@ -381,15 +392,27 @@ def complete(prompt: str) -> dict:
 Run it directly to see the pattern: `python examples/token_budget_cache.py`.
 Drop in `tiny-budget-ledger` for production by replacing `BudgetLedger`.
 
-## Performance
+## Benchmark (SWR and namespacing)
 
-| Operation | fast-cache | cachetools | functools.lru_cache |
-|-----------|-----------|------------|---------------------|
-| Cache hit (get) | **2.2M ops/sec** | 1.8M ops/sec | 4.1M ops/sec |
-| Cache miss (set) | **890K ops/sec** | 720K ops/sec | 780K ops/sec |
-| TTL check | **1.1M ops/sec** | 800K ops/sec | N/A |
-| SWR refresh | **200K ops/sec** | N/A | N/A |
+Output of `python benchmark_swr.py` (ITER=50000, warm=100, repeat=3, best of):
 
-Benchmarked on Apple M3, Python 3.12, single-threaded.
+```
+cache hit (+TTL check)    1,360,198 ops/sec
+lru_cache hit            18,704,866 ops/sec
+cache set                    57,190 ops/sec
+cache set (evicting)        174,448 ops/sec
+SWR stale serve             746,809 ops/sec
+namespace set+get           104,465 ops/sec
+```
 
-**Part of the [tiny-* ecosystem](https://github.com/hussain-alsaibai). MIT License.**
+The unflattering number is the second one: a bare `functools.lru_cache` hit is
+roughly 14x faster than a `fast-cache` hit, because a plain dict lookup has no
+TTL to check and no lock to take. `fast-cache` trades that speed for TTL,
+LRU eviction, memory caps and statistics. If you do not need those, a plain
+`lru_cache` is the better tool.
+
+## License
+
+MIT
+
+**Part of the [tiny-* ecosystem](https://github.com/hussain-alsaibai).**
