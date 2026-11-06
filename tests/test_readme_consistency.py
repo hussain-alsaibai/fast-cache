@@ -98,3 +98,33 @@ class TestRemovedSectionsStayRemoved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_wheel_manifest_doc_matches_both_modules():
+    """The walkthrough names a file list; the wheel must produce exactly it.
+
+    The doc is a code block of bare names. Reading it is cheap; building the
+    wheel is not, so this asserts the two things a stale document gets wrong:
+    the count it advertises, and that every module it names exists here.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent
+    doc = (root / "docs" / "dist-manifest-walkthrough.md").read_text(encoding="utf-8")
+
+    block = re.search(r"```\n(_v072\.py.*?)```", doc, re.S)
+    assert block, "walkthrough no longer contains the file listing block"
+    listed = [line.strip() for line in block.group(1).splitlines() if line.strip()]
+
+    claim = re.search(r"\(wheel, (\d+) files\)", doc)
+    assert claim, "walkthrough no longer states a file count"
+    assert len(listed) == int(claim.group(1)), (
+        f"walkthrough says {claim.group(1)} files but lists {len(listed)}"
+    )
+
+    modules = [n for n in listed if n.endswith(".py")]
+    assert len(modules) == 5, f"expected 5 shipped modules, doc lists {modules}"
+    for name in modules:
+        assert (root / name).exists(), f"walkthrough lists missing module {name}"
+    assert len([n for n in listed if ".dist-info/" in n]) == 5

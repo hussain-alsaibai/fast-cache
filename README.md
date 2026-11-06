@@ -411,6 +411,24 @@ TTL to check and no lock to take. `fast-cache` trades that speed for TTL,
 LRU eviction, memory caps and statistics. If you do not need those, a plain
 `lru_cache` is the better tool.
 
+## What is inside the wheel
+
+`fast-cache` ships more than one module: the current `fast_cache.py` plus the
+historical `fast_cache_v071.py`, `fast_cache_v072.py`, `_v072.py` and `_v080.py`
+sidecars. The published 0.8.0 wheel is ten entries; `tiny-dist-audit tree-digest` over it
+is printed in the walkthrough.
+
+[`docs/dist-manifest-walkthrough.md`](docs/dist-manifest-walkthrough.md) is a
+worked example of using `tiny-dist-audit` to record that file list, commit it,
+and fail CI when the next release adds, removes or changes a file — including
+the one line that matters for a zero-dependency package: `Requires-Dist`.
+
+```bash
+python -m pip wheel --no-deps --no-build-isolation -w /tmp/fc-dist .
+python -m tiny_dist_audit check /tmp/fc-dist/*.whl \
+  --baseline docs/fast_cache-0.8.0.manifest.json --fail-on high
+```
+
 ## License
 
 MIT
