@@ -92,7 +92,7 @@ is invisible in a changelog and obvious in a manifest diff.
 git clone https://github.com/hussain-alsaibai/fast-cache
 cd fast-cache
 python -m pip wheel --no-deps --no-build-isolation -w /tmp/fc-dist .
-pip install tiny-dist-audit
+pip install git+https://github.com/hussain-alsaibai/tiny-dist-audit.git
 python -m tiny_dist_audit check /tmp/fc-dist/*.whl \
   --baseline docs/fast_cache-0.8.0.manifest.json --fail-on high
 ```
