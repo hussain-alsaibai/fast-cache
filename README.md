@@ -219,8 +219,17 @@ cache.stats.hit_rate        # float 0.0–1.0
 cache.stats.evictions       # Total evictions (LRU or memory)
 cache.stats.expirations     # Total lazy expirations
 cache.info()                # Full dict with all metrics
-cache.size                  # Current entry count
-cache.memory_usage          # Total bytes used
+cache.size                  # Live entry count (expired entries reclaimed)
+cache.memory_usage          # Bytes accounted to live entries
+```
+
+`get_or_set` caches a `None` result like any other value — the factory runs
+once and is not re-invoked on later calls. Use `has()` to distinguish a key
+cached as `None` from one that was never set:
+
+```python
+cache.get_or_set("lookup:abc", lambda: registry.maybe_get("abc"))  # caches None
+cache.has("lookup:abc")   # True  — the key exists and holds None
 ```
 
 ### Persistence
@@ -272,7 +281,7 @@ sync `set` path.
 └─────────────────────────────────────────┘
 ```
 
-**Why lazy TTL?** No background threads means no drift, no scheduling overhead, and no zombie entries. Expired entries are cleaned up on the next `get()` or `cleanup()` call. The tradeoff: very stale entries consume memory until touched. Use `cleanup()` periodically if memory is tight.
+**Why lazy TTL?** No background threads means no drift, no scheduling overhead, and no zombie entries. Expired entries are reclaimed on the next `get()` for that key, on the next `size`/`memory_usage`/`info()`/`len()` read, and on `cleanup()`. Because the accessors reclaim before they report, `memory_usage` never counts an entry you can no longer retrieve — you don't need to call `cleanup()` periodically just to get an honest number.
 
 ## cache_method decorator (v0.7.0+)
 

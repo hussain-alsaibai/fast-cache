@@ -5,6 +5,43 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.9.0] - 2026-11-21
+
+### Fixed
+- **`size` / `memory_usage` / `info()` / `len()` counted expired entries.**
+  Lazy TTL means nothing deletes an expired entry until a `get` touches that
+  exact key, and these four accessors read raw structure instead of live
+  state. A cache whose entire contents had expired reported full size and
+  full memory indefinitely -- so the README's own advice (`cache.memory_usage`
+  to watch growth) read a number that only ever went up. All four now reclaim
+  expired entries before reporting. Nothing observable is lost: an expired
+  entry can never be returned by any accessor.
+- **`keys()` / `values()` / `items()` skipped expired entries but never
+  reclaimed them.** Iterating a fully-expired cache yielded `[]` while
+  `len()` still said 3. Iteration now agrees with size.
+- **A factory returning `None` was a permanent cache miss.** Both
+  `Cache.get_or_set` and `SingleFlightCache.get_or_set` tested `is not None`
+  for a hit, so a legitimate "no value" answer re-ran the factory on every
+  call -- and in `SingleFlightCache` it also defeated the stampede protection
+  the class exists to provide (every waiter re-ran it too). Both now use an
+  identity sentinel, matching what `cache_method` has done since 0.7.0.
+  Use `has()` to tell a cached `None` from a never-set key.
+
+### Changed
+- `SingleFlightCache.get_or_set` now *stores* a `None` result rather than
+  skipping the write. This changes behaviour for callers that relied on the
+  old miss-on-`None` semantics; the library's documented convention is that
+  falsy values (`None`, `0`, `""`, `False`) are cached correctly.
+
+### Tests
+- `tests/test_v090_expiry_accounting.py` -- 12 cases covering each accessor,
+  mixed TTLs, counter drift after a purge, and that reclaiming expired
+  entries is not counted as an eviction. 7 of the 12 fail against 0.8.0.
+- `TestFactoryReturningNone` rewritten: it previously asserted that a `None`
+  factory result re-ran the factory, which contradicted the same behaviour
+  `cache_method` documents and tests.
+
+
 ## [0.8.0] - 2026-10-23
 
 ### Fixed

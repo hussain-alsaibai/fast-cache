@@ -60,6 +60,23 @@ __version__ = "0.7.2"
 __all__ = ["SingleFlightCache", "SingleFlightStats"]
 
 
+class _Missing:
+    """Local sentinel: lets a cached ``None`` read as a hit.
+
+    Defined here rather than imported from ``fast_cache`` because this
+    sidecar intentionally has no runtime dependency on it. Only identity
+    matters, and the object is never handed to ``set``.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "MISSING"
+
+
+_MISSING = _Missing()
+
+
 class SingleFlightStats:
     """Counters for a SingleFlightCache.
 
@@ -177,9 +194,11 @@ class SingleFlightCache:
             the loader finishes, then returns the same value.
           - Otherwise: runs factory(), writes the result, and returns it.
         """
-        # Fast path: hit. Cache.get is already threadsafe.
-        value = self._cache.get(key)
-        if value is not None:
+        # Fast path: hit. Cache.get is already threadsafe. ``_MISSING`` as the
+        # default lets a cached ``None`` count as a hit instead of triggering a
+        # redundant factory run on every call.
+        value = self._cache.get(key, _MISSING)
+        if value is not _MISSING:
             return value
 
         # Slow path: miss. Acquire or join the in-flight group for this key.
@@ -200,8 +219,8 @@ class SingleFlightCache:
                 # Re-check the cache after acquiring the Event slot -
                 # the loader may have raced ahead and written before we
                 # started waiting.
-                cached = self._cache.get(key)
-                if cached is not None:
+                cached = self._cache.get(key, _MISSING)
+                if cached is not _MISSING:
                     self.stats.record_shared()
                     return cached
 
@@ -209,14 +228,14 @@ class SingleFlightCache:
                 # Loader has finished. Read from the cache so we get the
                 # value the loader actually wrote (the user may have
                 # set a different TTL or value than what the in-flight
-                # slot holds).
-                value = self._cache.get(key)
-                if value is not None:
+                # slot holds). A cached ``None`` is a real value here.
+                value = self._cache.get(key, _MISSING)
+                if value is not _MISSING:
                     self.stats.record_shared()
                     return value
-                # The loader's value was None or was evicted between the
-                # loader finishing and us waking. Fall back to the
-                # in-flight value as a best-effort.
+                # The loader's value was evicted between the loader
+                # finishing and us waking. Fall back to the in-flight
+                # value as a best-effort.
                 self.stats.record_shared()
                 return in_flight.value
             finally:
@@ -226,8 +245,9 @@ class SingleFlightCache:
         try:
             self.stats.record_load()
             value = factory()
-            if value is not None:
-                self._cache.set(key, value, ttl=ttl)
+            # A ``None`` result is cached too: otherwise every reader
+            # re-runs the factory for a legitimate "no value" answer.
+            self._cache.set(key, value, ttl=ttl)
             in_flight.value = value
             return value
         finally:

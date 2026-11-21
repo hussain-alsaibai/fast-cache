@@ -145,18 +145,43 @@ class TestStampedeProtection(unittest.TestCase):
 
 
 class TestFactoryReturningNone(unittest.TestCase):
-    """Factory returning None is treated as a real miss next time."""
+    """A cached None is a hit, matching the library's sentinel convention.
 
-    def test_none_factory_result_is_not_cached(self):
+    ``cache_method`` (fast_cache.py) and ``Cache.get_or_set`` both cache
+    ``None`` correctly via an internal sentinel. ``SingleFlightCache`` used
+    ``is not None`` as its hit test until 0.9.0, so a legitimate "no value"
+    answer re-ran the factory on every call -- a permanent cache miss that
+    also defeated the stampede protection it exists to provide.
+    """
+
+    def test_none_factory_result_is_cached(self):
         cache = Cache()
         sf = SingleFlightCache(cache)
-        result = sf.get_or_set("k", lambda: None)
+        calls = []
+        result = sf.get_or_set("k", lambda: calls.append(1) or None)
         self.assertIsNone(result)
-        # Next call must run factory again.
-        counter = []
-        result = sf.get_or_set("k", lambda: counter.append(1) or "real")
-        self.assertEqual(result, "real")
-        self.assertEqual(counter, [1])
+        self.assertEqual(calls, [1])
+        # Next call must NOT re-run the factory.
+        result = sf.get_or_set("k", lambda: calls.append(2) or "real")
+        self.assertIsNone(result)
+        self.assertEqual(calls, [1])
+        self.assertTrue(cache.has("k"))
+
+    def test_none_is_distinguishable_from_absent(self):
+        """``has`` still tells a cached None from a never-set key."""
+        cache = Cache()
+        sf = SingleFlightCache(cache)
+        sf.get_or_set("set-none", lambda: None)
+        self.assertTrue(cache.has("set-none"))
+        self.assertFalse(cache.has("never-set"))
+
+    def test_cache_get_or_set_caches_none_too(self):
+        """Plain Cache.get_or_set shares the convention."""
+        cache = Cache()
+        calls = []
+        cache.get_or_set("k", lambda: calls.append(1) or None)
+        cache.get_or_set("k", lambda: calls.append(2) or None)
+        self.assertEqual(calls, [1])
 
 
 class TestStats(unittest.TestCase):

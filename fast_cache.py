@@ -28,8 +28,26 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener", "cache_method"]
+
+
+class _MissingSentinel:
+    """Distinguishes "key absent" from "key holds None".
+
+    ``Cache.get`` returns ``None`` for a miss, which is also a legal stored
+    value. Callers that need to tell the two apart pass this object as the
+    ``default`` and compare by identity; it can never be a cached value
+    because it is module-private and never handed to ``set``.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "MISSING"
+
+
+_MISSING = _MissingSentinel()
 
 
 def _SCALAR_SIZE(value: Any) -> Optional[int]:
@@ -406,9 +424,14 @@ class Cache:
             return True
 
     def get_or_set(self, key: str, factory: Callable[[], Any], ttl: Optional[float] = None) -> Any:
-        """Get value, or set from factory if missing."""
-        value = self.get(key)
-        if value is not None:
+        """Get value, or set from factory if missing.
+
+        A cached ``None`` is a **hit**: the factory does not run again.
+        Use :meth:`has` to distinguish "absent" from "cached as None".
+        """
+        _missing = _MISSING
+        value = self.get(key, _missing)
+        if value is not _missing:
             return value
         value = factory()
         self.set(key, value, ttl=ttl)
@@ -654,6 +677,20 @@ class Cache:
             self._stats.expiration()  # approximate
             return len(expired)
 
+    def _purge_expired(self) -> None:
+        """Drop every expired entry (caller must hold the lock).
+
+        Iterators skip expired entries anyway, so nothing is lost by
+        reclaiming them. Without this, ``size`` and ``memory_usage`` stay
+        inflated by entries no caller can ever retrieve.
+        """
+        expired = [k for k, e in self._data.items() if e.is_expired]
+        if not expired:
+            return
+        for key in expired:
+            self._remove(key)
+        self._stats.expiration()  # one increment per sweep, as cleanup() does
+
     def keys(self) -> Iterator[str]:
         """Iterate over non-expired keys."""
         with self._lock:
@@ -689,17 +726,22 @@ class Cache:
 
     @property
     def size(self) -> int:
+        """Number of live entries. Expired entries are reclaimed first."""
         with self._lock:
+            self._purge_expired()
             return len(self._data)
 
     @property
     def memory_usage(self) -> int:
+        """Bytes accounted to live entries. Expired entries are reclaimed first."""
         with self._lock:
+            self._purge_expired()
             return self._total_size
 
     def info(self) -> dict:
         """Return cache statistics and metadata."""
         with self._lock:
+            self._purge_expired()
             return {
                 "entries": len(self._data),
                 "maxsize": self.maxsize,
@@ -710,8 +752,7 @@ class Cache:
             }
 
     def __len__(self) -> int:
-        with self._lock:
-            return len(self._data)
+        return self.size
 
     def __contains__(self, key: str) -> bool:
         return self.has(key)
