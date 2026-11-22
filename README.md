@@ -207,7 +207,7 @@ for agent-side async factories when you don't want a full async wrapper.
 ```python
 cache.cleanup()              # Remove all expired entries
 cache.expire(key, seconds)   # Set/update TTL for a key
-cache.ttl_remaining(key)    # Seconds until expiry (-1 = no TTL, -2 = missing)
+cache.ttl_remaining(key)    # float seconds until expiry, or None (no TTL / missing / expired)
 ```
 
 ### Stats & Info
@@ -223,13 +223,22 @@ cache.size                  # Live entry count (expired entries reclaimed)
 cache.memory_usage          # Bytes accounted to live entries
 ```
 
-`get_or_set` caches a `None` result like any other value — the factory runs
-once and is not re-invoked on later calls. Use `has()` to distinguish a key
-cached as `None` from one that was never set:
+`get_or_set` — sync **and** async — caches a `None` result like any other
+value: the factory runs once and is not re-invoked on later calls. This
+matters most for async factories, where the "no value" answer is usually the
+expensive one (a 404, a rate-limited response, an empty retrieval). Use
+`has()` to distinguish a key cached as `None` from one that was never set:
 
 ```python
 cache.get_or_set("lookup:abc", lambda: registry.maybe_get("abc"))  # caches None
 cache.has("lookup:abc")   # True  — the key exists and holds None
+```
+
+`get_or_set_async` always returns an awaitable, including on a hit, so callers
+can `await` it unconditionally:
+
+```python
+resp = await cache.get_or_set_async(f"llm:{key}", lambda: llm.acomplete(prompt), ttl=3600)
 ```
 
 ### Persistence

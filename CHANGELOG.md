@@ -5,6 +5,38 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [0.9.1] - 2026-11-22
+
+### Fixed
+- **`Cache.get_or_set_async` still re-ran the factory for a cached `None`.**
+  0.9.0 fixed the sentinel in `Cache.get_or_set` and
+  `SingleFlightCache.get_or_set`, and the changelog said so in those words --
+  but `get_or_set_async` kept its own `if value is not None` hit test and was
+  never swept. So the sync path cached `None` correctly and the async path
+  treated it as a miss on every call.
+
+  The async path is the expensive half: a cached `None` in an agent loop is
+  usually a provider 404, a rate-limited response with no body, or an empty
+  retrieval -- the answers you cache precisely so you do not pay for them
+  again. Nothing raised; the factory just ran again.
+
+  Now uses the same `_MISSING` sentinel as the sync path. `get_or_set_async`
+  still returns an awaitable on a hit, which is its documented contract.
+
+### Fixed (docs)
+- `README.md` documented `ttl_remaining()` as returning `-1` for no TTL and
+  `-2` for a missing key. Both are wrong: the method returns `None` for no TTL,
+  a missing key, and an expired key, and `float` seconds otherwise. A caller
+  checking `== -1` would have read "no TTL" as a remaining time of
+  `-1` seconds. The README now also states the cached-`None` rule for the
+  async path, not only the sync one.
+
+### Tests
+- `tests/test_v091_async_none.py` -- 6 cases: cached `None` is a hit, `has()`
+  still separates absent from `None`, the return value is always awaitable,
+  falsy values (`0`, `""`, `False`, `[]`, `{}`) are cached, and sync/async
+  agree on what a hit is. 2 of the 6 fail against 0.9.0.
+
 ## [0.9.0] - 2026-11-21
 
 ### Fixed

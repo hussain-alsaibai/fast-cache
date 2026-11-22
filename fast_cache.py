@@ -28,7 +28,7 @@ import sys
 from collections import OrderedDict
 from typing import Any, Optional, Callable, Iterator, Awaitable
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 __all__ = ["Cache", "CacheAsync", "CacheStats", "DiskSpillover", "CacheMetricsListener", "cache_method"]
 
 
@@ -453,8 +453,10 @@ class Cache:
                 ttl=3600,
             )
         """
-        value = self.get(key)
-        if value is not None:
+        # The sentinel comparison, not `is not None`: a cached None is a hit.
+        # 0.9.0 fixed the sync get_or_set and left this path untouched.
+        value = self.get(key, _MISSING)
+        if value is not _MISSING:
             return self._immediate(value)
         return self._set_after_await(key, afactory(), ttl)
 
